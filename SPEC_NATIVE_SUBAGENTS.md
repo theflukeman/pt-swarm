@@ -176,10 +176,13 @@ Cases to pin:
    *Rejected:* dropping helper spawning in delegated mode — the external-spawn path still has the
    capability, and a `swarm-worker` subagent has no `subagent` tool, so the coordinator is the only
    party that can honour it. No code is required for this; it is a documented convention.
+3. **The board post is the report of record.** A member's findings go on the board, addressed
+   `@coordinator`, exactly as the brief says. The job's final message is transport, not a second
+   report: when the member posted, the coordinator ignores it; when the member finished without
+   posting, the coordinator posts the job's final message to the board under that member's name so
+   the record stays complete. *Rejected:* treating the job result as the deliverable — it wakes
+   exactly one reader, leaves peers nothing to cite by `#seq`, and disappears when the session does.
 
 ## Open questions
 1. **Cost accounting.** Ten native subagents are ten background jobs in one session with no PID
    bookkeeping; the concurrency ceiling becomes the harness's limit, not the swarm's.
-2. **Board or result as the report?** Today the brief says "post your report". Under this model the
-   job's final message is also a report. Duplicating both wastes tokens; pick one (board), and have
-   the coordinator fold in the final message only when the member did not post.
