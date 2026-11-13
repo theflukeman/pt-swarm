@@ -207,6 +207,35 @@ TOOLS = [
 
 _NO_ID = object()
 _RESPONSE_LOCK = threading.Lock()
+MAX_OUTSTANDING_WAITS = 8
+
+
+def _handle_swarm_wait(handlers: SwarmToolHandlers, args: Dict[str, Any], stop_event=None):
+    """Run a server-owned board wait that can be interrupted during shutdown."""
+    effective_caller = args.get("caller") or handlers.caller
+    mentions_only = args.get("mentions_only", True)
+    since = args["since"]
+    outcome = handlers.bm.wait_for_event(
+        reader_name=effective_caller,
+        since_seq=since,
+        mentions_only=mentions_only,
+        timeout=float(args.get("timeout_seconds", 300)),
+        stop_event=stop_event,
+    )
+    base_msg = (
+        f"Waiting for a message that calls on you by name, or on @all posted after #{since}."
+        if mentions_only
+        else f"Waiting for any message posted after #{since}."
+    )
+    if outcome.get("woken"):
+        head = outcome.get("head", since)
+        matching_seqs = ", ".join(f"#{seq}" for seq in outcome.get("matching_seqs", []))
+        return (
+            f"{base_msg}\n[swarm] Woken by new board message(s) {matching_seqs} "
+            f"(board head is #{head}; you have read up to #{since}). "
+            f"Call read_board(since={since}) to read what you missed."
+        )
+    return base_msg
 
 
 def send_response(req_id: Any, result: Any = None, error: Any = None):
@@ -236,7 +265,7 @@ def create_runtime() -> SwarmToolHandlers:
         if not bm_inst:
             return
         m_info = bm_inst.read_members().get("members", {}).get(target_name, {})
-        if m_info.get("killed"):
+        if m_info.get("killed") or m_info.get("execution_mode") == "delegated":
             return
         if not worker_runner.is_running(target_name):
             last_read = m_info.get("last_read_seq", 0)
@@ -332,7 +361,13 @@ def _validate_tool_arguments(tool_name: Any, args: Dict[str, Any]) -> bool:
     return True
 
 
-def handle_rpc_request(handlers: SwarmToolHandlers, req: Any, wait_executor=None) -> None:
+def handle_rpc_request(
+    handlers: SwarmToolHandlers,
+    req: Any,
+    wait_executor=None,
+    wait_slots=None,
+    wait_stop_event=None,
+) -> None:
     if not isinstance(req, dict) or req.get("jsonrpc") != "2.0" or not isinstance(req.get("method"), str):
         req_id = req.get("id", _NO_ID) if isinstance(req, dict) else _NO_ID
         send_response(req_id if req_id is not _NO_ID else None, error={"code": -32600, "message": "Invalid Request"})
@@ -369,7 +404,32 @@ def handle_rpc_request(handlers: SwarmToolHandlers, req: Any, wait_executor=None
             send_response(req_id, error={"code": -32602, "message": "Invalid params"})
             return
         if tool_name == "swarm_wait" and wait_executor is not None:
-            wait_executor.submit(handle_rpc_request, handlers, req)
+            if wait_slots is not None and not wait_slots.acquire(blocking=False):
+                send_response(req_id, error={"code": -32000, "message": "Too many outstanding swarm_wait requests"})
+                return
+
+            def run_wait():
+                try:
+                    result = _handle_swarm_wait(handlers, args, stop_event=wait_stop_event)
+                    send_response(
+                        req_id,
+                        {"content": [{"type": "text", "text": result}], "isError": False},
+                    )
+                except Exception:
+                    send_response(
+                        req_id,
+                        {"content": [{"type": "text", "text": "Tool execution failed"}], "isError": True},
+                    )
+                finally:
+                    if wait_slots is not None:
+                        wait_slots.release()
+
+            try:
+                wait_executor.submit(run_wait)
+            except RuntimeError:
+                if wait_slots is not None:
+                    wait_slots.release()
+                send_response(req_id, error={"code": -32000, "message": "Server is shutting down"})
             return
 
         try:
@@ -412,7 +472,12 @@ def handle_rpc_request(handlers: SwarmToolHandlers, req: Any, wait_executor=None
 
 def main():
     handlers = create_runtime()
-    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="swarm-wait") as wait_executor:
+    wait_stop_event = threading.Event()
+    wait_slots = threading.BoundedSemaphore(MAX_OUTSTANDING_WAITS)
+    wait_executor = ThreadPoolExecutor(
+        max_workers=MAX_OUTSTANDING_WAITS, thread_name_prefix="swarm-wait"
+    )
+    try:
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -422,7 +487,16 @@ def main():
             except Exception:
                 send_response(None, error={"code": -32700, "message": "Parse error"})
                 continue
-            handle_rpc_request(handlers, req, wait_executor=wait_executor)
+            handle_rpc_request(
+                handlers,
+                req,
+                wait_executor=wait_executor,
+                wait_slots=wait_slots,
+                wait_stop_event=wait_stop_event,
+            )
+    finally:
+        wait_stop_event.set()
+        wait_executor.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == "__main__":

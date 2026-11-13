@@ -1,7 +1,11 @@
 """Regression tests for MCP request handling and tool-boundary validation."""
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -132,6 +136,84 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual({response["id"] for response in responses}, {1, 2, 3})
         self.assertTrue(posted.is_set())
         self.assertEqual(len({response["id"] for response in responses}), len(responses))
+
+    def test_eof_cancels_pending_wait_and_shutdown_is_prompt(self):
+        env = dict(os.environ, POLYTOKEN_SWARM_DIR=str(Path(self.tmp.name) / "subprocess"))
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pt_swarm.mcp_server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        request = json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "swarm_wait", "arguments": {"since": 0, "mentions_only": False, "timeout_seconds": 300}},
+        })
+        started = time.monotonic()
+        process.stdin.write(request + "\n")
+        process.stdin.flush()
+        members_path = Path(env["POLYTOKEN_SWARM_DIR"]) / "members.json"
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                members = json.loads(members_path.read_text())
+                if members.get("members", {}).get("coordinator", {}).get("wake_mode") == "anything":
+                    break
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.01)
+        else:
+            process.kill()
+            process.wait(timeout=2)
+            stdout, stderr = process.communicate()
+            self.fail(f"subprocess wait did not enter board wait; stdout={stdout!r}, stderr={stderr!r}")
+        process.stdin.close()
+        process.wait(timeout=2)
+        self.assertLess(time.monotonic() - started, 2)
+        stderr = process.stderr.read()
+        self.assertEqual(process.returncode, 0, stderr)
+        process.stdout.close()
+        process.stderr.close()
+
+    def test_wait_admission_is_bounded_and_ping_post_stay_responsive(self):
+        limit = mcp_server.MAX_OUTSTANDING_WAITS
+        entered = threading.Event()
+        release = threading.Event()
+
+        class PendingBoardManager:
+            def wait_for_event(self, **kwargs):
+                entered.set()
+                release.wait(2)
+                return {"woken": False, "head": 0, "matching_seqs": []}
+
+        handlers = SwarmToolHandlers(PendingBoardManager())
+        executor = mcp_server.ThreadPoolExecutor(max_workers=limit)
+        slots = threading.BoundedSemaphore(limit)
+        stop_event = threading.Event()
+        try:
+            wait_request = {
+                "jsonrpc": "2.0", "id": "wait", "method": "tools/call",
+                "params": {"name": "swarm_wait", "arguments": {"since": 0}},
+            }
+            for index in range(limit):
+                mcp_server.handle_rpc_request(
+                    handlers, dict(wait_request, id=index), wait_executor=executor,
+                    wait_slots=slots, wait_stop_event=stop_event,
+                )
+            self.assertTrue(entered.wait(1))
+            mcp_server.handle_rpc_request(
+                handlers, dict(wait_request, id="overflow"), wait_executor=executor,
+                wait_slots=slots, wait_stop_event=stop_event,
+            )
+            mcp_server.handle_rpc_request(handlers, {"jsonrpc": "2.0", "id": "ping", "method": "ping"}, wait_executor=executor)
+            responses = self.responses()
+            self.assertTrue(any(r.get("id") == "overflow" and "error" in r for r in responses))
+            self.assertTrue(any(r.get("id") == "ping" and r.get("result") == {} for r in responses))
+        finally:
+            release.set()
+            executor.shutdown(wait=True)
 
     def test_invalid_tool_boundary_values_return_sanitized_invalid_params(self):
         cases = [
