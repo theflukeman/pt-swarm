@@ -65,13 +65,21 @@ class TestWorkerProcessManager(unittest.TestCase):
             worker_cmd_template=cmd,
             spawn_grace_seconds=0.0,
         )
-        res = mgr.spawn_or_wake(name="logger", prompt_text="hi", brief_seq=1)
+        opened_handles = []
+        real_open = open
+
+        def capture_open(*args, **kwargs):
+            handle = real_open(*args, **kwargs)
+            opened_handles.append(handle)
+            return handle
+
+        with patch("builtins.open", side_effect=capture_open):
+            res = mgr.spawn_or_wake(name="logger", prompt_text="hi", brief_seq=1)
         self.assertTrue(res["spawned"])
+        self.assertTrue(opened_handles)
+        self.assertTrue(opened_handles[0].closed)
         proc = mgr._processes["logger"]
         proc.wait(timeout=3.0)
-        log_fh = getattr(mgr, "_log_handles", {}).get("logger")
-        if log_fh is not None:
-            self.assertTrue(log_fh.closed)
         # This unlink assertion is portable and confirms the child no longer owns it.
         log_path = Path(res["log"])
         log_path.unlink()
