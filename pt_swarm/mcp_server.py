@@ -265,7 +265,7 @@ def create_runtime() -> SwarmToolHandlers:
         if not bm_inst:
             return
         m_info = bm_inst.read_members().get("members", {}).get(target_name, {})
-        if m_info.get("killed") or m_info.get("execution_mode") == "delegated":
+        if m_info.get("killed") or m_info.get("execution_mode") in {"delegated", "bound"}:
             return
         if not worker_runner.is_running(target_name):
             last_read = m_info.get("last_read_seq", 0)

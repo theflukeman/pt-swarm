@@ -117,7 +117,7 @@ class PolytokenSwarmAdapter:
         if target_name == "coordinator" or entry.get("kind") == "brief":
             return
         m_info = self.board_manager.read_members().get("members", {}).get(target_name, {})
-        if m_info.get("killed"):
+        if m_info.get("killed") or m_info.get("execution_mode") in {"delegated", "bound"}:
             return
         if not self.worker_runner.is_running(target_name):
             last_read = m_info.get("last_read_seq", 0)
