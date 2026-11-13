@@ -276,11 +276,22 @@ class WorkerProcessManager:
                     if "config load failed" in output or "is not set" in output:
                         # The usual cause is a cleared MCP child environment: `polytoken`
                         # cannot load a config that references provider env vars by name.
+                        # The names differ per install, so derive them from the config
+                        # rather than naming providers here. Imported here so that
+                        # `python3 -m pt_swarm.env_vars` is not pre-imported by the package.
+                        try:
+                            from .env_vars import referenced_env_names
+
+                            missing = referenced_env_names()
+                        except Exception:
+                            missing = []
                         hint = (
-                            "The worker's `polytoken` could not load its config. Polytoken "
-                            "starts stdio children with a cleared environment, so declare the "
-                            "provider variables it references (NEURALWATT_API_KEY and friends) "
-                            "under this server's `pass_env:`; workers inherit them."
+                            "The worker's `polytoken` could not load its config: the env vars "
+                            "it references are missing. Declare them under this server's "
+                            "`pass_env:`"
+                            + (f" ({', '.join(missing)})" if missing else "")
+                            + "; workers inherit the child's environment. "
+                            "`python3 -m pt_swarm.env_vars` prints that block for this machine."
                         )
                     return {
                         "spawned": False,

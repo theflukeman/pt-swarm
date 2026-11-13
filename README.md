@@ -171,8 +171,8 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
 
 ### Option A: Single Project (Workspace-Local)
 
-1. **In this repository**: Polytoken auto-discovers `.polytoken/config.yaml`, `.polytoken/subagents/`, and `.polytoken/skills/` out of the box. The server runs as `python3 -m pt_swarm.mcp_server`.
-2. **In another project**: Install the package (`pip install /path/to/pt-swarm`) and copy this repository's `.polytoken/` into that project's root, updating `command`/`args` in `.polytoken/config.yaml` to `pt-swarm-mcp` (or keep `python3 -m pt_swarm.mcp_server` with the package installed).
+1. **In this repository**: copy the example config first — `cp .polytoken/config.example.yaml .polytoken/config.yaml`. That file is environment-local and gitignored, because its env values differ per install. Polytoken then auto-discovers `.polytoken/config.yaml`, `.polytoken/subagents/`, and `.polytoken/skills/` out of the box, and the server runs as `python3 -m pt_swarm.mcp_server`.
+2. **In another project**: Install the package (`pip install /path/to/pt-swarm`) and copy this repository's `.polytoken/` into that project's root, renaming `config.example.yaml` to `config.yaml` and updating `command`/`args` to `pt-swarm-mcp` (or keep `python3 -m pt_swarm.mcp_server` with the package installed).
 
 ### Option B: Global Installation (Available in Any Project)
 
@@ -196,18 +196,24 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
        env:
          POLYTOKEN_SWARM_DIR: "./.swarm/default"
          POLYTOKEN_AGENT_NAME: "coordinator"
-       # Provider credentials `polytoken` needs to load its own config; workers
-       # inherit this child's environment. See step 3.
-       pass_env:
-         - NEURALWATT_API_KEY
-         - EXA_API_KEY
-         - TAVILY_API_KEY
+       # The env vars your polytoken config references (provider keys and the
+       # like) -- stdio children start with a cleared environment. See step 3
+       # for the block to paste here.
+       # pass_env:
+       #   - YOUR_PROVIDER_API_KEY
    ```
    Polytoken launches stdio MCP servers with the **project directory as the working directory**, so `./.swarm/default` isolates each workspace's board to that project.
 
    Because this entry sits in the *global* config, every project now gets a swarm: a session creates `.swarm/default/` lazily on first use. To enable it in selected projects only, put the same block in that project's `.polytoken/config.yaml` instead.
 
-3. **Environment variables must be declared**: MCP stdio children start with a *cleared* environment. Only `HOME`, `PATH`, `LANG`, and `TMPDIR` are passed by default; anything else (for example `POLYTOKEN_WORKER_CMD` or `POLYTOKEN_BIN`) must appear under `env:` or `pass_env:` for that server. Variables exported in your shell are not visible to the server. This includes the credentials `polytoken` itself reads: its global config references them by name (`$NEURALWATT_API_KEY`, `$EXA_API_KEY`, `$TAVILY_API_KEY`), so a child without them cannot load that config at all — and since workers inherit the child's environment, every `polytoken exec` spawn then dies at startup with `config load failed`. Such a spawn is reported as failed, with the exit code, the log tail, and a hint naming `pass_env:`.
+3. **Environment variables must be declared**: MCP stdio children start with a *cleared* environment. Only `HOME`, `PATH`, `LANG`, and `TMPDIR` are passed by default; anything else (for example `POLYTOKEN_WORKER_CMD` or `POLYTOKEN_BIN`) must appear under `env:` or `pass_env:` for that server. Variables exported in your shell are not visible to the server.
+
+   This includes credentials `polytoken` itself reads: its config references them by name (`api_key: $SOME_API_KEY`), so a child without them cannot load that config at all — and since workers inherit the child's environment, every `polytoken exec` spawn then dies at startup with `config load failed`. Which names are needed differs per install, so nothing here lists a provider; ask for them instead:
+   ```bash
+   python3 -m pt_swarm.env_vars          # paste-ready pass_env block for your machine
+   python3 -m pt_swarm.env_vars --names  # just the names
+   ```
+   It reads the config files Polytoken would read (`$POLYTOKEN_CONFIG`, then `$XDG_CONFIG_HOME/polytoken/config.yaml`, then `./.polytoken/config.yaml`) and prints every `$VAR`/`${VAR}` they reference. A spawn that fails this way reports the exit code, the log tail, and a hint naming the variables it derived.
 
 4. **Copy subagents & skills globally** (prefer copying over symlinking so the global setup survives moving or deleting this checkout):
    ```bash

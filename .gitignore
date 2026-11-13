@@ -3,6 +3,7 @@
 
 # Environment-local session hooks and state
 .polytoken/hooks.json
+.polytoken/config.yaml
 .polytoken/context.py
 .polytoken/plugins/
 .codex/

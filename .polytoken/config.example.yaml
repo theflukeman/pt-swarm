@@ -1,0 +1,30 @@
+# Polytoken Configuration Layer for Swarm Orchestration
+#
+# Copy this file to .polytoken/config.yaml. That file is environment-local and
+# gitignored: its env values differ per install, so it is not shared.
+#
+# Subagents in .polytoken/subagents/*.md and skills in .polytoken/skills/*/SKILL.md
+# are auto-discovered by Polytoken from this configuration root.
+#
+# If the package is installed globally, `command: pt-swarm-mcp` works from any
+# project; the args below run it straight out of a checkout instead.
+
+mcp_servers:
+  swarm:
+    transport: stdio
+    command: python3
+    args:
+      - "-m"
+      - "pt_swarm.mcp_server"
+    env:
+      POLYTOKEN_SWARM_DIR: "./.swarm/default"
+      POLYTOKEN_AGENT_NAME: "coordinator"
+    # Polytoken's global config references provider credentials by name, while MCP
+    # stdio children start with a cleared environment. A child whose `polytoken`
+    # cannot load that config fails every worker spawn with `config load failed`.
+    # Declare the names YOUR install needs -- this prints the block to paste here:
+    #
+    #   python3 -m pt_swarm.env_vars
+    #
+    # pass_env:
+    #   - YOUR_PROVIDER_API_KEY
