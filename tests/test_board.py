@@ -381,7 +381,8 @@ class TestBoardManagerReviewRegressions(unittest.TestCase):
 
     def test_complete_json_without_newline_is_preserved(self):
         acknowledged = self.bm.post_message("verifier", "persisted")
-        raw = self.bm.board_file.read_bytes().rstrip(b"\\n")
+        raw = self.bm.board_file.read_bytes().rstrip(b"\n")
+        self.assertFalse(raw.endswith(b"\n"))
         self.bm.board_file.write_bytes(raw)
         following = self.bm.post_message("coordinator", "next")
         self.assertEqual(following["seq"], acknowledged["seq"] + 1)
@@ -395,6 +396,16 @@ class TestBoardManagerReviewRegressions(unittest.TestCase):
         posted = self.bm.post_message("coordinator", "after stale marker")
         self.assertEqual(posted["seq"], 2)
         self.assertEqual(self.bm.sequence_file.read_bytes(), b"2\n")
+
+    def test_post_rejects_invalid_roster_shape_without_mutating_board_or_sequence(self):
+        self.bm.post_message("coordinator", "existing")
+        self.bm.members_file.write_text('{"members": []}', encoding="utf-8")
+        board_before = self.bm.board_file.read_bytes()
+        sequence_before = self.bm.sequence_file.read_bytes()
+        with self.assertRaises((TypeError, ValueError)):
+            self.bm.post_message("verifier", "must not append")
+        self.assertEqual(self.bm.board_file.read_bytes(), board_before)
+        self.assertEqual(self.bm.sequence_file.read_bytes(), sequence_before)
 
     def test_post_validates_roster_before_appending(self):
         self.bm.members_file.write_text('{"members":', encoding="utf-8")
@@ -509,6 +520,40 @@ class TestBoardManagerReviewRegressions(unittest.TestCase):
         self.bm.manage_channel("coordinator", "unsubscribe", channel="qa", target_name="verifier")
         result = self.bm.wait_for_event("verifier", since_seq=first_seq, mentions_only=True, timeout=0)
         self.assertTrue(result["woken"])
+
+    def test_wait_for_event_stop_event_returns_empty_and_restores_wake_mode(self):
+        stop_event = threading.Event()
+        stop_event.set()
+        result = self.bm.wait_for_event(
+            "verifier", since_seq=0, timeout=10, stop_event=stop_event
+        )
+        self.assertEqual(result["matching_seqs"], [])
+        self.assertFalse(result["woken"])
+        self.assertEqual(
+            self.bm.read_members()["members"]["verifier"]["wake_mode"], "working"
+        )
+
+    def test_channel_mentions_use_active_state_at_each_message(self):
+        self.bm.manage_channel("coordinator", "create", channel="qa")
+        self.bm.manage_channel("coordinator", "create", channel="other")
+        self.bm.manage_channel("coordinator", "subscribe", channel="qa", target_name="verifier")
+        active = self.bm.post_message("coordinator", "@#qa active", channel="other")
+        self.bm.manage_channel("coordinator", "archive", channel="qa")
+        archived = self.bm.post_message("coordinator", "@#qa archived", channel="other")
+        self.bm.manage_channel("coordinator", "create", channel="qa", topic="again")
+
+        read = self.bm.read_messages(reader="verifier", since=active["seq"] - 1)["messages"]
+        read_seqs = [message["seq"] for message in read]
+        self.assertIn(active["seq"], read_seqs)
+        self.assertNotIn(archived["seq"], read_seqs)
+
+        for mentions_only in (True, False):
+            result = self.bm.wait_for_event(
+                "verifier", since_seq=active["seq"] - 1,
+                mentions_only=mentions_only, timeout=0,
+            )
+            self.assertIn(active["seq"], result["matching_seqs"])
+            self.assertNotIn(archived["seq"], result["matching_seqs"])
 
     def test_archived_channel_can_be_recreated(self):
         self.bm.manage_channel("coordinator", "create", channel="qa", topic="old")

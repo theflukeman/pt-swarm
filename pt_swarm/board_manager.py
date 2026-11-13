@@ -396,7 +396,11 @@ class BoardManager:
             if not self.members_file.exists():
                 raise FileNotFoundError(f"Member roster not found: {self.members_file}")
             members_data = self.read_members()
-            members_map = members_data.get("members", {})
+            if not isinstance(members_data, dict) or not isinstance(members_data.get("members"), dict):
+                raise ValueError("Member roster must contain a members object")
+            members_map = members_data["members"]
+            if any(not isinstance(member, dict) for member in members_map.values()):
+                raise ValueError("Each member roster entry must be an object")
             messages = self.read_raw_messages()
             high_water = max(self._read_sequence_high_water(), self._board_high_water())
             next_seq = high_water + 1
@@ -530,12 +534,28 @@ class BoardManager:
             result[seq] = set(state)
         return result
 
+    def _active_channels_by_seq(self, messages: List[Dict[str, Any]]) -> Dict[int, Set[str]]:
+        """Replay channel creation and archival state at each message sequence."""
+        active: Set[str] = set()
+        result: Dict[int, Set[str]] = {}
+        for message in messages:
+            control = message.get("control")
+            if isinstance(control, dict):
+                channel = control.get("channel")
+                if isinstance(channel, str) and channel:
+                    if control.get("op") == "create":
+                        active.add(channel)
+                    elif control.get("op") == "archive":
+                        active.discard(channel)
+            result[message.get("seq", 0)] = set(active)
+        return result
+
     def _member_sees(
         self,
         reader: str,
         member_info: Dict[str, Any],
         msg: Dict[str, Any],
-        active_channels: Set[str],
+        active_channels_by_seq: Dict[int, Set[str]],
         messages: List[Dict[str, Any]],
         channel_memberships: Optional[Dict[int, Set[str]]] = None,
     ) -> bool:
@@ -554,7 +574,9 @@ class BoardManager:
         if is_all or reader in mentioned:
             return True
         return any(
-            c != MAIN_CHANNEL and c in active_channels and (ALL_CHANNELS in eff or c in eff)
+            c != MAIN_CHANNEL
+            and c in active_channels_by_seq.get(msg.get("seq", 0), set())
+            and (ALL_CHANNELS in eff or c in eff)
             for c in ch_mentions
         )
 
@@ -572,9 +594,7 @@ class BoardManager:
             members_data = self.read_members()
             members_map = members_data.get("members", {})
             member_info = members_map.get(reader, {}) if reader else {}
-            active_chs = {
-                c["name"] for c in self.channel_registry(all_msgs) if not c.get("archived")
-            }
+            active_channels_by_seq = self._active_channels_by_seq(all_msgs)
             channel_memberships = (
                 self._channel_membership_by_seq(reader, member_info, all_msgs) if reader else None
             )
@@ -587,7 +607,7 @@ class BoardManager:
                 selected = [
                     m for m in all_msgs
                     if m.get("seq") in seq_set
-                    and (not reader or self._member_sees(reader, member_info, m, active_chs, all_msgs, channel_memberships))
+                    and (not reader or self._member_sees(reader, member_info, m, active_channels_by_seq, all_msgs, channel_memberships))
                 ]
                 return {"messages": selected, "head": head_seq}
 
@@ -600,7 +620,7 @@ class BoardManager:
                     and (
                         not reader
                         or self._member_sees(
-                            reader, member_info, m, active_chs, all_msgs, channel_memberships
+                            reader, member_info, m, active_channels_by_seq, all_msgs, channel_memberships
                         )
                     )
                 ]
@@ -608,7 +628,7 @@ class BoardManager:
                 filtered = [
                     m
                     for m in filtered
-                    if self._member_sees(reader, member_info, m, active_chs, all_msgs, channel_memberships)
+                    if self._member_sees(reader, member_info, m, active_channels_by_seq, all_msgs, channel_memberships)
                 ]
 
             returned = filtered[:limit]
@@ -686,6 +706,7 @@ class BoardManager:
                 "applied_model": applied_model,
                 "workspace_mode": workspace_mode,
                 "phase": phase,
+                "execution_mode": "delegated" if phase == "delegated" else "external",
                 "wake_mode": "mentions",
                 "wait_since": head_seq,
                 "last_read_seq": head_seq,
@@ -713,6 +734,7 @@ class BoardManager:
             if member is None:
                 return False
             member["job_id"] = job_id
+            member["execution_mode"] = "bound"
             member["state"] = state
             member["phase"] = state
             self.write_members(data)
@@ -770,11 +792,11 @@ class BoardManager:
                         targets.append(m_name)
 
             for t in targets:
+                killed_names.append(t)
                 if not members[t].get("killed"):
                     members[t]["killed"] = True
                     members[t]["desired_state"] = "KILLED"
                     members[t]["phase"] = "KILLED"
-                    killed_names.append(t)
 
             if killed_names:
                 self.write_members(data)
@@ -872,6 +894,7 @@ class BoardManager:
         since_seq: int,
         mentions_only: bool = True,
         timeout: float = 60.0,
+        stop_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         """
         Blocks until a relevant message arrives after `since_seq` or timeout expires.
@@ -884,6 +907,8 @@ class BoardManager:
 
         try:
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 with self._new_message_cond:
                     observed_epoch = self._message_epoch
                 with self.lock:
@@ -895,9 +920,7 @@ class BoardManager:
                     members_dict = self.read_members().get("members", {})
                     member_info = members_dict.get(reader_name, {})
                     known_names = set(members_dict.keys())
-                    active_chs = {
-                        c["name"] for c in self.channel_registry(msgs) if not c.get("archived")
-                    }
+                    active_channels_by_seq = self._active_channels_by_seq(msgs)
                     channel_memberships = self._channel_membership_by_seq(
                         reader_name, member_info, msgs
                     )
@@ -907,7 +930,7 @@ class BoardManager:
                         if m.get("agent") == reader_name:
                             continue
                         if not mentions_only:
-                            if self._member_sees(reader_name, member_info, m, active_chs, msgs, channel_memberships):
+                            if self._member_sees(reader_name, member_info, m, active_channels_by_seq, msgs, channel_memberships):
                                 matching.append(m)
                         else:
                             text = m.get("text", "")
@@ -915,7 +938,7 @@ class BoardManager:
                             eff = channel_memberships.get(m.get("seq", 0), set())
                             ch_hit = any(
                                 c != MAIN_CHANNEL
-                                and c in active_chs
+                                and c in active_channels_by_seq.get(m.get("seq", 0), set())
                                 and (ALL_CHANNELS in eff or c in eff)
                                 for c in chs
                             )
@@ -935,7 +958,8 @@ class BoardManager:
                     break
                 with self._new_message_cond:
                     if self._message_epoch == observed_epoch:
-                        self._new_message_cond.wait(timeout=min(remaining, 0.25))
+                        wait_timeout = min(remaining, 0.1 if stop_event is not None else 0.25)
+                        self._new_message_cond.wait(timeout=wait_timeout)
         finally:
             self.set_member_wake_mode(reader_name, "working")
 
