@@ -21,6 +21,8 @@ if sys.platform == "win32":
 else:
     import fcntl
 
+from .model_selection import read_session_model, resolve_model
+
 MAIN_CHANNEL = "main"
 ALL_CHANNELS = "*"
 RESERVED_CHANNELS = {"main", "all", "here"}
@@ -477,12 +479,15 @@ class BoardManager:
             if role == "worker" and ROLE_WORKER_NAME_RE.match(name):
                 role = "narrator" if name.startswith("narrator") else "monitor"
 
+            desired_model, applied_model = resolve_model(
+                model, role, read_session_model(self.swarm_dir)
+            )
             member_entry: Dict[str, Any] = {
                 "conversation_id": conversation_id or str(uuid.uuid4()),
                 "role": role,
                 "desired_state": "RUNNING",
-                "desired_model": model or "default",
-                "applied_model": model or "default",
+                "desired_model": desired_model,
+                "applied_model": applied_model,
                 "workspace_mode": workspace_mode,
                 "phase": "RUNNING",
                 "wake_mode": "mentions",
@@ -491,7 +496,7 @@ class BoardManager:
                 "last_nudged_seq": head_seq,
                 "last_park_blocked_seq": 0,
                 "killed": False,
-                "model": model or "default",
+                "model": desired_model,
             }
             if channels is not None:
                 member_entry["channels"] = list(channels)
@@ -513,11 +518,15 @@ class BoardManager:
     def set_model(self, name: str, new_model: str) -> bool:
         with self.lock:
             data = self.read_members()
-            if name not in data.get("members", {}):
+            member = data.get("members", {}).get(name)
+            if member is None:
                 return False
-            data["members"][name]["model"] = new_model
-            data["members"][name]["desired_model"] = new_model
-            data["members"][name]["applied_model"] = new_model
+            desired_model, applied_model = resolve_model(
+                new_model, member.get("role", "worker"), read_session_model(self.swarm_dir)
+            )
+            member["model"] = desired_model
+            member["desired_model"] = desired_model
+            member["applied_model"] = applied_model
             self.write_members(data)
             return True
 

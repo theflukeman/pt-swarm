@@ -71,3 +71,8 @@ Tracks the active roster, member configuration, and execution status.
 - `wake_mode`: `"working"` (active), `"mentions"` (parked in `swarm_wait` for `@name`/`@all`/`@#channel`), or `"anything"` (parked for any visible message).
 - `phase` / `desired_state`: `"RUNNING"` or `"KILLED"`.
 - `killed`: `true` when terminated permanently; killed names stay reserved and cannot be reused.
+
+### Model Fields:
+- `model` / `desired_model`: the model **request** as the coordinator or user made it. `"default"` means "use this member's role tier"; `"session"` means the model the Polytoken session is running; `"full"`/`"mini"`/`"nano"` name the reserved tier groups; anything else is a concrete model name, a `name(level)` reasoning variant, or a `@mg:<group>` reference.
+- `applied_model`: the selector the worker process launched with, resolved from the request (see `pt_swarm/model_selection.py`). It is never `"default"`, because `polytoken exec --model` rejects that sentinel.
+- Role tiers: workers and verifiers run the full tier, the monitor and narrator the mini tier. `swarm(action="model")` rewrites all three fields and takes effect the next time the member starts.

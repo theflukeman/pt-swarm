@@ -81,12 +81,13 @@ class TestWorkerProcessManager(unittest.TestCase):
 
     def test_default_worker_command_is_headless_exec(self):
         # A bare `polytoken` launches the TUI and dies without a TTY, so the
-        # default must be the headless `exec` subcommand.
+        # default must be the headless `exec` subcommand. The model travels on
+        # the command line because `exec --model` is the only way to pin it.
         env = {k: v for k, v in os.environ.items() if k not in ("POLYTOKEN_WORKER_CMD", "POLYTOKEN_BIN")}
         with patch.dict(os.environ, env, clear=True):
             with patch("pt_swarm.worker_runner.shutil.which", return_value="/opt/bin/polytoken"):
                 cmd = WorkerProcessManager._resolve_default_cmd()
-        self.assertEqual(cmd, ["/opt/bin/polytoken", "exec", "{prompt}"])
+        self.assertEqual(cmd, ["/opt/bin/polytoken", "exec", "--model", "{model}", "{prompt}"])
 
     def test_spawn_reports_failure_when_worker_exits_immediately(self):
         mgr = WorkerProcessManager(

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .model_selection import read_session_model, resolve_model
 from .workspace_manager import WorkspaceManager
 
 
@@ -101,8 +102,26 @@ class WorkerProcessManager:
         if polytoken_bin:
             # A bare `polytoken` starts the TUI, which needs a TTY and exits
             # immediately when spawned as a worker. `exec` is the headless mode.
-            return [polytoken_bin, "exec", "{prompt}"]
+            return [polytoken_bin, "exec", "--model", "{model}", "{prompt}"]
         return None
+
+    @staticmethod
+    def _expand_cmd(template: List[str], values: Dict[str, str]) -> List[str]:
+        """Substitute placeholders, dropping the model flag when none resolved.
+
+        `polytoken exec --model` rejects the roster's `default` sentinel, so a member
+        with no resolved model must start without the flag at all. A `{model}` token
+        is removed together with the `--model`/`-m` flag directly before it, which
+        leaves a bare `polytoken exec <prompt>`.
+        """
+        cmd: List[str] = []
+        for token in template:
+            if "{model}" in token and not values.get("model"):
+                if cmd and cmd[-1] in ("--model", "-m"):
+                    cmd.pop()
+                continue
+            cmd.append(token.format(**values))
+        return cmd
 
     def _pid_file(self, name: str) -> Path:
         return self.pids_dir / f"{name}.pid"
@@ -176,10 +195,19 @@ class WorkerProcessManager:
             )
             initial_input = identity_hint + body
 
+            # The roster's model field is a request, not a selector: `default` is the
+            # sentinel for "use this role's tier" and `session` means the model this
+            # Polytoken session is running. Resolve it once, here, so every spawn path
+            # (`add`, an @mention wake, a restart) launches with the same selector.
+            desired_model, applied_model = resolve_model(
+                model, role, read_session_model(self.swarm_dir)
+            )
+
             spec = {
                 "name": name,
                 "role": role,
-                "model": model or "default",
+                "model": applied_model,
+                "desired_model": desired_model,
                 "workspace_mode": workspace_mode,
                 "workspace_path": str(work_dir),
                 "swarm_dir": str(self.swarm_dir),
@@ -205,19 +233,19 @@ class WorkerProcessManager:
             env["POLYTOKEN_AGENT_ROLE"] = role
             env["POLYTOKEN_SWARM_DIR"] = str(self.swarm_dir)
             env["POLYTOKEN_INITIAL_PROMPT"] = initial_input
-            if model and model != "default":
-                env["POLYTOKEN_MODEL"] = model
 
-            cmd = [
-                part.format(
-                    name=name,
-                    model=model or "default",
-                    workspace=str(work_dir),
-                    swarm_dir=str(self.swarm_dir),
-                    prompt=initial_input,
-                )
-                for part in self.worker_cmd_template
-            ]
+            # The model travels on the command line: `polytoken` has no POLYTOKEN_MODEL
+            # variable, and `exec --model` is the only way to pin a worker's model.
+            cmd = self._expand_cmd(
+                self.worker_cmd_template,
+                {
+                    "name": name,
+                    "model": applied_model,
+                    "workspace": str(work_dir),
+                    "swarm_dir": str(self.swarm_dir),
+                    "prompt": initial_input,
+                },
+            )
 
             log_path = self.logs_dir / f"{name}.log"
             log_fh = open(log_path, "a", encoding="utf-8")

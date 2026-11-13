@@ -104,6 +104,50 @@ All agents in a workspace share **one** MCP server entry, so every tool call acc
 
 ---
 
+## Model selection
+
+A member's `model` is a **request**, not a literal selector. `swarm(action="add", model=...)`
+records it on the roster, and `WorkerProcessManager` resolves it once per spawn into a value
+`polytoken exec --model` accepts:
+
+| Request | Runs on |
+|---|---|
+| unset, `default`, `auto` | the member's role tier: `@mg:polytoken:default_model_full` for workers and verifiers, `@mg:polytoken:default_model_mini` for the monitor and narrator |
+| `full`, `mini`, `nano` | that reserved Polytoken tier group |
+| `session` | the model this Polytoken session is running, as recorded by the hook below; the role tier when nothing is recorded |
+| anything else | passed through unchanged: a model name, a `name(level)` reasoning variant, or a `@mg:<group>` group reference |
+
+The roster keeps both halves: `model`/`desired_model` is the request and `applied_model`
+is the selector the process launches with. `polytoken exec` rejects the `default` sentinel
+("model 'default' is not configured"), so a member with no resolved model starts without
+`--model` at all. `swarm(action="models")` lists the models this install can run and
+repeats these rules under `selection`.
+
+MCP stdio children start with a cleared environment, so the swarm server cannot see which
+model the session is running. A hook records it instead: `python3 -m pt_swarm.model_hook`
+writes `POLYTOKEN_MODEL_NAME` into `<swarm_dir>/session_model.json`. `hooks.json` is
+environment-local (it is gitignored here), so add the block to `.polytoken/hooks.json` in
+the project or to `~/.config/polytoken/hooks.json` for a global install:
+
+```json
+[
+  {
+    "name": "swarm-session-model",
+    "event": "session_start",
+    "handler": { "bash": "python3 -m pt_swarm.model_hook; echo '{\"outcome\":\"allow\"}'" }
+  },
+  {
+    "name": "swarm-session-model-switch",
+    "event": "pre_user_prompt",
+    "handler": { "bash": "python3 -m pt_swarm.model_hook; echo '{\"outcome\":\"accept\"}'" }
+  }
+]
+```
+
+Without the hook everything still works — `session` just falls back to the role tier.
+
+---
+
 ## Quickstart Integration Example (Python)
 
 ```python
@@ -186,6 +230,10 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
      POLYTOKEN_WORKER_CMD: "polytoken exec {prompt}"
    ```
    Supported placeholders: `{prompt}`, `{name}`, `{model}`, `{workspace}`, `{swarm_dir}`.
+   `{model}` is the member's resolved selector (see *Model selection*). When a template puts
+   `{model}` after a `--model`/`-m` flag and nothing resolved, both tokens are dropped, so
+   `polytoken exec --model {model} {prompt}` degrades to `polytoken exec <prompt>` instead of
+   failing on an invalid model name.
    A worker that exits during startup is reported as a failed spawn (`spawned: false` with its exit code and log tail) rather than a running agent.
 
 7. **Uninstall**:

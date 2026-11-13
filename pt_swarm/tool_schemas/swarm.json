@@ -19,7 +19,7 @@
     },
     "model": {
       "type": "string",
-      "description": "Model identifier to pin this worker to. Leave unset to use the parent's model."
+      "description": "Model to run this member on. Unset means its role tier: workers and verifiers get the full tier, the monitor and narrator the mini tier. Also accepts a model name, a name(level) variant, a @mg:<group> reference, or the aliases full, mini, nano, and session."
     },
     "workspace": {
       "type": "string",

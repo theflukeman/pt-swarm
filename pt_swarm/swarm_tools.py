@@ -10,6 +10,7 @@ import subprocess
 from typing import Any, Callable, Dict, List, Optional
 
 from .board_manager import BoardManager, MAIN_CHANNEL
+from .model_selection import FULL_SELECTOR, MINI_SELECTOR, NANO_SELECTOR
 
 
 def _list_polytoken_models() -> List[Dict[str, Any]]:
@@ -99,7 +100,10 @@ class SwarmToolHandlers:
                 self.model_lister() if self.model_lister is not None else _list_polytoken_models()
             )
             models: List[Dict[str, Any]] = [
-                {"name": "default", "description": "Inherited conversation model"}
+                {
+                    "name": "default",
+                    "description": "This member's role tier (see 'selection')",
+                }
             ]
             seen = {"default"}
             for entry in discovered:
@@ -118,6 +122,22 @@ class SwarmToolHandlers:
                         )
                         seen.add(variant)
             res: Dict[str, Any] = {"status": "ok", "models": models}
+            res["selection"] = {
+                "default": (
+                    "the member's role tier: workers and verifiers run "
+                    f"{FULL_SELECTOR}, the monitor and narrator run {MINI_SELECTOR}"
+                ),
+                "aliases": {
+                    "full": FULL_SELECTOR,
+                    "mini": MINI_SELECTOR,
+                    "nano": NANO_SELECTOR,
+                    "session": "the model this session is running, when recorded",
+                },
+                "pass_through": (
+                    "a concrete model name, a name(level) reasoning variant, or a "
+                    "@mg:<group> model-group reference"
+                ),
+            }
             if not discovered:
                 res["note"] = (
                     "Could not read the model list from `polytoken models`; "
@@ -194,7 +214,8 @@ class SwarmToolHandlers:
                     "status": "added",
                     "name": base_name,
                     "members": added_members,
-                    "model": model or "default",
+                    "model": m_entry["desired_model"],
+                    "applied_model": m_entry["applied_model"],
                     "brief_seqs": brief_seqs,
                     "note": (
                         f"Spawned {len(added_members)} workers ({added_members[0]}..{added_members[-1]}). "
@@ -233,7 +254,8 @@ class SwarmToolHandlers:
             res = {
                 "status": "added",
                 "name": base_name,
-                "model": model or "default",
+                "model": m_entry["desired_model"],
+                "applied_model": m_entry["applied_model"],
                 "conversation_id": m_entry["conversation_id"],
                 "note": f"The brief is on the board as #{post['seq']}, where every member of the swarm can read it.",
             }
@@ -264,9 +286,15 @@ class SwarmToolHandlers:
         elif action == "model":
             name = kwargs.get("name") or caller
             new_model = kwargs.get("model") or "default"
-            if self.bm.set_model(name, new_model):
-                return {"status": "ok", "updated": name, "model": new_model}
-            return {"error": f"Member '{name}' not found"}
+            if not self.bm.set_model(name, new_model):
+                return {"error": f"Member '{name}' not found"}
+            member = self.bm.read_members().get("members", {}).get(name, {})
+            return {
+                "status": "ok",
+                "updated": name,
+                "model": member.get("desired_model", new_model),
+                "applied_model": member.get("applied_model"),
+            }
 
         elif action == "channel":
             op = kwargs.get("op")
