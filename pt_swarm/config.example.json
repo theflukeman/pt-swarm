@@ -1,12 +1,6 @@
 {
   "harness": "polytoken",
   "version": "1.0.0",
-  "swarm_config": {
-    "swarm_id": "default",
-    "worker_command": "polytoken exec {prompt}",
-    "workspace_mode": "inherit",
-    "enable_stall_monitor": false
-  },
   "roles": {
     "coordinator": {
       "definition": "agent_definitions/coordinator.md",

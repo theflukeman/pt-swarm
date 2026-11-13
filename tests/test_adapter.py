@@ -267,6 +267,15 @@ class TestWorkspaceManager(unittest.TestCase):
         wm.cleanup_workspace("preserve", mode="share")
         self.assertTrue((ws / "unmerged.txt").exists())
 
+    def test_share_cleanup_preserves_clean_unmerged_commit(self):
+        wm = WorkspaceManager(self.test_dir)
+        ws = wm.provision_workspace("committed", mode="share")
+        (ws / "unmerged.txt").write_text("committed work", encoding="utf-8")
+        subprocess.run(["git", "add", "unmerged.txt"], cwd=str(ws), check=True)
+        subprocess.run(["git", "commit", "-m", "worker change"], cwd=str(ws), check=True)
+        wm.cleanup_workspace("committed", mode="share")
+        self.assertTrue((ws / "unmerged.txt").exists())
+
     def test_share_worktree_cleanup_removes_branch_and_allows_recreate(self):
         wm = WorkspaceManager(self.test_dir)
         ws1 = wm.provision_workspace("agent1", mode="share")

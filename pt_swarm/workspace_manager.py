@@ -113,7 +113,20 @@ class WorkspaceManager:
                         ["git", "status", "--porcelain"],
                         cwd=str(target_dir), capture_output=True, text=True,
                     )
-                    if status.returncode != 0 or status.stdout.strip():
+                    head = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        cwd=str(target_dir), capture_output=True, text=True,
+                    )
+                    merged = subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", head.stdout.strip(), "HEAD"],
+                        cwd=str(self.repo_root), capture_output=True,
+                    )
+                    if (
+                        status.returncode != 0
+                        or status.stdout.strip()
+                        or head.returncode != 0
+                        or merged.returncode != 0
+                    ):
                         return
                     subprocess.run(
                         ["git", "worktree", "remove", str(target_dir)],
