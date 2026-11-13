@@ -192,7 +192,7 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
    # reject a bare `pip install .`:
    #   pip install --user --break-system-packages .
    # `--user` keeps the install in ~/.local and leaves the interpreter's own
-   # site-packages untouched. Isolated alternative: `pipx install .`.
+   # site-packages untouched.
    ```
    This registers `pt-swarm-mcp` (`pt_swarm.mcp_server:main`) and `pt-swarm-cli` (`pt_swarm.cli:main`) on your `PATH`, and installs the role prompts, tool schemas, and example config inside the package.
 
@@ -286,7 +286,9 @@ python3 -m pt_swarm.cli --swarm-dir ./.swarm/default --watch
 # Launch the live web dashboard (http://127.0.0.1:5388/)
 POLYTOKEN_SWARM_DIR=./.swarm/default node sidecar_ui/main.mjs
 
-# Run all tests (Python unittest discovery and Node.js test runner)
+# Run all tests (Python unittest discovery and Node.js test runner).
+# The Python packaging regression builds an sdist; install its build requirement first:
+python3 -m pip install 'setuptools>=68.0'
 python3 -m unittest discover -s tests -v
 node --test tests/test_sidecar_ui.mjs
 ```

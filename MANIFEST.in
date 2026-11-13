@@ -1,7 +1,8 @@
 # Include the repository files needed by documented installation, tests, and UI use.
 include LICENSE NOTICE README.md AGENTS.md PORTING_MANIFEST.md pyproject.toml package.json plugin.json
 recursive-include assets *
-recursive-include .polytoken *.yaml *.md
+include .polytoken/config.example.yaml
+recursive-include .polytoken *.md
 recursive-include schemas *.md
 recursive-include subagents *.md
 recursive-include skills *.md

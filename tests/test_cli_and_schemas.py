@@ -145,27 +145,47 @@ class TestCliAndSchemas(unittest.TestCase):
 
     def test_packaging_includes_agent_definitions_and_sidecar_bin(self):
         root = Path(__file__).resolve().parent.parent
-        with tempfile.TemporaryDirectory() as output_dir:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            source = temp / "source"
+            shutil.copytree(
+                root,
+                source,
+                ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules", ".venv", "*.egg-info"),
+            )
+            local_config = source / ".polytoken"
+            local_config.mkdir(exist_ok=True)
+            (local_config / "config.yaml").write_text("sentinel-local-config\n", encoding="utf-8")
+            (local_config / "hooks.json").write_text("sentinel-local-hooks\n", encoding="utf-8")
+            output_dir = temp / "dist"
+            output_dir.mkdir()
             build_code = (
                 "import setuptools.build_meta; "
                 "print(setuptools.build_meta.build_sdist(__import__('sys').argv[1]))"
             )
             try:
                 subprocess.run(
-                    [sys.executable, "-c", build_code, output_dir],
-                    cwd=root,
+                    [sys.executable, "-c", build_code, str(output_dir)],
+                    cwd=source,
                     check=True,
                     capture_output=True,
                     text=True,
                 )
             except subprocess.CalledProcessError as exc:
-                if "No module named 'setuptools'" in exc.stderr:
-                    self.skipTest("setuptools build backend is not installed; install project build requirements")
-                self.fail(f"Source distribution build failed:\n{exc.stderr}")
-            archives = list(Path(output_dir).glob("*.tar.gz"))
+                self.fail(
+                    "Source distribution build failed. Install the project build requirement "
+                    "with `python3 -m pip install 'setuptools>=68.0'` and retry.\n"
+                    f"{exc.stderr}"
+                )
+            archives = list(output_dir.glob("*.tar.gz"))
             self.assertEqual(len(archives), 1, "Expected exactly one source distribution")
             with tarfile.open(archives[0], "r:gz") as archive:
                 shipped = {Path(member.name).as_posix() for member in archive.getmembers()}
+                archive_text = {
+                    Path(member.name).as_posix(): archive.extractfile(member).read()
+                    for member in archive.getmembers()
+                    if member.isfile() and member.name.endswith((".yaml", "hooks.json"))
+                }
 
         top = archives[0].name.removesuffix(".tar.gz")
         required = (
@@ -190,6 +210,11 @@ class TestCliAndSchemas(unittest.TestCase):
         )
         missing = [f"{top}/{path}" for path in required if f"{top}/{path}" not in shipped]
         self.assertEqual(missing, [], f"Source distribution is missing required files: {missing}")
+        self.assertIn(f"{top}/.polytoken/config.example.yaml", archive_text)
+        self.assertNotIn(f"{top}/.polytoken/config.yaml", shipped)
+        self.assertNotIn(f"{top}/.polytoken/hooks.json", shipped)
+        self.assertNotIn(b"sentinel-local-config", b"".join(archive_text.values()))
+        self.assertNotIn(b"sentinel-local-hooks", b"".join(archive_text.values()))
 
         adapter = PolytokenSwarmAdapter(workspace_path=str(self.test_dir))
         for role in ("coordinator", "worker", "verifier", "monitor", "narrator"):
