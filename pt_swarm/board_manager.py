@@ -114,6 +114,7 @@ class BoardManager:
         self._message_epoch = 0
         self.on_member_mentioned = on_member_mentioned
         self._init_files()
+        self.sync_session_models()
 
     def _init_files(self):
         with self.lock:
@@ -125,8 +126,13 @@ class BoardManager:
                             "conversation_id": "coordinator",
                             "role": "coordinator",
                             "desired_state": "RUNNING",
-                            "desired_model": "default",
-                            "applied_model": "default",
+                            # The coordinator is the Polytoken session itself, so it asks
+                            # for `session` and applies to the model this conversation is
+                            # running, as recorded by the model hook.
+                            "desired_model": "session",
+                            "applied_model": resolve_model(
+                                "session", "coordinator", read_session_model(self.swarm_dir)
+                            )[1],
                             "workspace_mode": "inherit",
                             "phase": "RUNNING",
                             "wake_mode": "working",
@@ -135,13 +141,45 @@ class BoardManager:
                             "last_nudged_seq": 0,
                             "last_park_blocked_seq": 0,
                             "killed": False,
-                            "model": "default",
+                            "model": "session",
                         }
                     },
                 }
                 self._atomic_write_json(self.members_file, initial_members)
             if not self.board_file.exists():
                 self.board_file.touch()
+
+    def sync_session_models(self) -> None:
+        """Re-resolve `session` requests against the model this session is running.
+
+        The model hook writes the session model into the swarm dir, but nothing calls
+        back into the server when it changes, so the roster is reconciled whenever the
+        roster is touched on the session's behalf (`status`, `add`, `model`) and once at
+        startup. That also repairs boards whose coordinator entry was created before it
+        carried a real selector.
+        """
+        with self.lock:
+            data = self.read_members()
+            session_model = read_session_model(self.swarm_dir)
+            changed = False
+            for member in data.get("members", {}).values():
+                if not isinstance(member, dict):
+                    continue
+                role = member.get("role", "worker")
+                request = member.get("model") or "default"
+                legacy_coordinator = (
+                    role == "coordinator" and member.get("applied_model") == "default"
+                )
+                if request != "session" and not legacy_coordinator:
+                    continue
+                if legacy_coordinator and request == "default":
+                    member["model"] = member["desired_model"] = "session"
+                applied_model = resolve_model("session", role, session_model)[1]
+                if member.get("applied_model") != applied_model:
+                    member["applied_model"] = applied_model
+                    changed = True
+            if changed:
+                self.write_members(data)
 
     @staticmethod
     def _atomic_write_json(target: Path, data: Dict[str, Any]):

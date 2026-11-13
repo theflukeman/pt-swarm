@@ -270,5 +270,56 @@ class ModelHookTests(unittest.TestCase):
             self.assertFalse((swarm_dir / "session_model.json").exists())
 
 
+class CoordinatorModelTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.swarm_dir = Path(self._tmp.name) / ".swarm" / "default"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_coordinator_asks_for_the_session_model(self):
+        bm = BoardManager(self.swarm_dir)
+        coordinator = bm.read_members()["members"]["coordinator"]
+        self.assertEqual(coordinator["model"], "session")
+        self.assertEqual(coordinator["desired_model"], "session")
+        self.assertEqual(coordinator["applied_model"], FULL_SELECTOR)
+
+    def test_coordinator_applies_the_recorded_session_model(self):
+        write_session_model(self.swarm_dir, SESSION_MODEL)
+        bm = BoardManager(self.swarm_dir)
+        coordinator = bm.read_members()["members"]["coordinator"]
+        self.assertEqual(coordinator["applied_model"], SESSION_MODEL)
+
+    def test_startup_repairs_a_legacy_coordinator_entry(self):
+        self.swarm_dir.mkdir(parents=True)
+        legacy = {
+            "title": "Default Swarm",
+            "members": {
+                "coordinator": {
+                    "conversation_id": "coordinator",
+                    "role": "coordinator",
+                    "desired_model": "default",
+                    "applied_model": "default",
+                    "model": "default",
+                }
+            },
+        }
+        (self.swarm_dir / "members.json").write_text(json.dumps(legacy), encoding="utf-8")
+        write_session_model(self.swarm_dir, SESSION_MODEL)
+        bm = BoardManager(self.swarm_dir)
+        coordinator = bm.read_members()["members"]["coordinator"]
+        self.assertEqual(coordinator["model"], "session")
+        self.assertEqual(coordinator["desired_model"], "session")
+        self.assertEqual(coordinator["applied_model"], SESSION_MODEL)
+
+    def test_status_reports_a_model_switch(self):
+        bm = BoardManager(self.swarm_dir)
+        handlers = SwarmToolHandlers(bm)
+        write_session_model(self.swarm_dir, "vendor/late-model")
+        coordinator = handlers.handle_swarm(action="status")["roster"]["coordinator"]
+        self.assertEqual(coordinator["applied_model"], "vendor/late-model")
+
+
 if __name__ == "__main__":
     unittest.main()

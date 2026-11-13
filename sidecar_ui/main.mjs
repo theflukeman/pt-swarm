@@ -770,6 +770,8 @@ function buildSnapshot(appData, id, dir, { roster, msgs, sourceKey, raw, remote 
   const title = roster.title || convTitle(id);
   const head = msgs.length ? Number(msgs[msgs.length - 1].seq) || msgs.length : 0;
   const names = Object.keys(roster.members).filter((n) => roster.members[n] && typeof roster.members[n] === 'object');
+  // What a `session` model request resolves to on this board (the model hook writes it).
+  const sessionModel = remote ? '' : readSessionModel(dir);
   // Member transcripts change as members work, so their stats are in the etag.
   const transcripts = new Map(names.map((n) => [n, summarizeTranscript(appData, roster.members[n].conversation_id)]));
   const trKeys = names.map((n) => `${n}:${transcripts.get(n).key}`).join(',');
@@ -795,7 +797,10 @@ function buildSnapshot(appData, id, dir, { roster, msgs, sourceKey, raw, remote 
     const mt = transcripts.get(n).summary?.mtime || 0;
     return `${f ? f.kind : ''}${mt && now - mt > STUCK_MS ? 's' : ''}`;
   }).join(',');
-  const etag = `${sourceKey}|${title}|${trKeys}|${vf.etag}|${pf.mtime}:${pf.size}|${Object.keys(allowedFiles).join('\0')}|${stuckKeys}`;
+  // The model label is in the etag so a model change (a switch, or the hook
+  // recording one) reaches the client without another field changing.
+  const modelKeys = names.map((n) => memberModelLabel(roster.members[n], sessionModel)).join(',');
+  const etag = `${sourceKey}|${title}|${trKeys}|${vf.etag}|${pf.mtime}:${pf.size}|${Object.keys(allowedFiles).join('\0')}|${stuckKeys}|${modelKeys}`;
 
   const posts = new Map();
   const edges = new Map(); // "from\0to" -> edge
@@ -863,7 +868,7 @@ function buildSnapshot(appData, id, dir, { roster, msgs, sourceKey, raw, remote 
     return {
       name,
       conversation_id: m.conversation_id || '',
-      model: m.model || '',
+      model: memberModelLabel(m, sessionModel),
       role,
       wake_mode: m.wake_mode || '',
       status: remote ? remoteStatusOf(m, tr) : statusOf(m, tr),
@@ -937,7 +942,10 @@ function buildSnapshot(appData, id, dir, { roster, msgs, sourceKey, raw, remote 
 //    messages: [message with seq > since]}
 // Members carry the members.json keys (conversation_id, role, killed, model,
 // wake_mode, cursors...) plus the owner LS (node_id, owner_kind, owner_label),
-// phase, desired_state and updated_at. There is no presence: a member on
+// phase, desired_state and updated_at. `model` is the display label computed by
+// memberModelLabel (the effective selector, not the roster's request), and a
+// remote board has no local session_model.json, so `session` shows its selector.
+// There is no presence: a member on
 // another LS shows when it was last seen. One watcher process runs per shown
 // swarm and is stopped once the pane stops asking for it. Everything in a
 // document is untrusted (any writer of the board DB, including the user's
@@ -1015,9 +1023,40 @@ const cliEnv = () => ({ ...process.env, TERM: 'dumb' });
 const cliArgs = (anchor, extra) =>
   ['swarm', '--json', ...extra, ...(anchor.db ? ['--db', anchor.db] : []), anchor.swarmId];
 
+// A roster's `model` is the request ("default", "session", a tier alias or a
+// concrete selector) and `applied_model` is what the process launches with. Show
+// the effective model: the reserved tier groups read as "full tier" & co., and a
+// `session` request resolves to the model the Polytoken session is running.
+const MODEL_TIER_LABELS = {
+  '@mg:polytoken:default_model_full': 'full tier',
+  '@mg:polytoken:default_model_mini': 'mini tier',
+  '@mg:polytoken:default_model_nano': 'nano tier',
+};
+
+function memberModelLabel(m, sessionModel) {
+  const request = typeof m.model === 'string' ? m.model : '';
+  const applied = typeof m.applied_model === 'string' ? m.applied_model : '';
+  if (request === 'session') return sessionModel || MODEL_TIER_LABELS[applied] || applied || request;
+  const selector = applied || request;
+  return MODEL_TIER_LABELS[selector] || selector;
+}
+
+// The model this session is running, as recorded by pt_swarm's model hook
+// (POLYTOKEN_MODEL_NAME), or '' when that hook is not installed.
+function readSessionModel(dir) {
+  const { text } = readCached(join(dir, 'session_model.json'), 4096);
+  if (!text) return '';
+  try {
+    const v = JSON.parse(text);
+    return typeof v?.model === 'string' ? v.model : '';
+  } catch {
+    return '';
+  }
+}
+
 // Keeps the members.json view of a document's member: the legacy `killed`
 // and `model` keys stay authoritative for everything the file path computes.
-function normalizeMembers(raw) {
+function normalizeMembers(raw, sessionModel = '') {
   const out = {};
   if (!raw || typeof raw !== 'object') return out;
   for (const [name, m] of Object.entries(raw)) {
@@ -1027,7 +1066,7 @@ function normalizeMembers(raw) {
       ...m,
       phase,
       killed: !!m.killed || m.desired_state === 'KILLED' || phase === 'KILLED',
-      model: m.model || m.applied_model || m.desired_model || '',
+      model: memberModelLabel(m, sessionModel),
     };
   }
   return out;

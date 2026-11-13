@@ -13,10 +13,34 @@ test('sidecar_ui resolves directSwarmDir only for its members and accepts coordi
     JSON.stringify({
       title: 'Direct Swarm',
       members: {
-        coordinator: { conversation_id: 'coordinator', role: 'coordinator', wake_mode: 'working' },
-        w1: { conversation_id: '11111111-1111-1111-1111-111111111111', role: 'worker', wake_mode: 'anything' },
+        coordinator: {
+          conversation_id: 'coordinator',
+          role: 'coordinator',
+          wake_mode: 'working',
+          model: 'session',
+          desired_model: 'session',
+          applied_model: '@mg:polytoken:default_model_full',
+        },
+        w1: {
+          conversation_id: '11111111-1111-1111-1111-111111111111',
+          role: 'worker',
+          wake_mode: 'anything',
+          model: 'default',
+          applied_model: '@mg:polytoken:default_model_mini',
+        },
+        w2: {
+          conversation_id: '22222222-2222-2222-2222-222222222222',
+          role: 'worker',
+          wake_mode: 'anything',
+          model: 'vendor/pinned(high)',
+          applied_model: 'vendor/pinned(high)',
+        },
       },
     }),
+  );
+  writeFileSync(
+    join(directDir, 'session_model.json'),
+    JSON.stringify({ model: 'neuralwatt/deepseek-v4.1-flash' }),
   );
   writeFileSync(
     join(directDir, 'board.jsonl'),
@@ -38,6 +62,14 @@ test('sidecar_ui resolves directSwarmDir only for its members and accepts coordi
     assert.equal(r1.title, 'Direct Swarm');
     const w1 = r1.members.find((m) => m.name === 'w1');
     assert.equal(w1.status, 'waiting');
+
+    // Model labels show what the member runs, not the roster's request: tier
+    // groups read as tiers, `session` reads as the model the session is on, and
+    // a pinned selector passes through.
+    const byName = Object.fromEntries(r1.members.map((m) => [m.name, m]));
+    assert.equal(byName.coordinator.model, 'neuralwatt/deepseek-v4.1-flash');
+    assert.equal(byName.w1.model, 'mini tier');
+    assert.equal(byName.w2.model, 'vendor/pinned(high)');
 
     // Unrelated UUID must NOT falsely match directSwarmDir
     const r2 = await swarmHandler({ conversationId: '99999999-9999-9999-9999-999999999999' });

@@ -22,10 +22,19 @@ One directory per swarm, under the coordinator's conversation:
 | File | Meaning |
 |---|---|
 | `board.jsonl` | append-only feed, one `{"seq","agent","text","time"}` per line |
-| `members.json` | roster `{"title","members":{name:{conversation_id,model,role,wake_mode,wait_since,last_read_seq,last_nudged_seq,last_park_blocked_seq,killed}}}` |
+| `members.json` | roster `{"title","members":{name:{conversation_id,model,role,wake_mode,wait_since,last_read_seq,last_nudged_seq,last_park_blocked_seq,killed}}}`; `model` is the request and `applied_model` the resolved selector (see *Model labels* below) |
+| `session_model.json` | the model this Polytoken session is running, written by `pt_swarm.model_hook` when its `hooks.json` entry is installed |
 | `view.json` | the narrator's Overview data (written by the narrator member; see below) |
 | `view.html` | the narrator's Overview template |
 | `<appData>/brain/<memberConv>/.system_generated/logs/transcript.jsonl` | each member's compact transcript, for its step count, current activity and whether its last step failed |
+
+**Model labels.** The UI shows what a member runs, not what the roster asked for.
+`model` in `members.json` is a request (`default`, `session`, `full`/`mini`/`nano`, or
+a concrete selector) and `applied_model` is what its process launches with, so the
+snapshot's `model` field is one label: the reserved tier groups read as `full tier`,
+`mini tier`, and `nano tier`; a `session` request reads as the model recorded in
+`session_model.json` (falling back to the applied selector when the hook is not
+installed); anything else passes through.
 
 `appData` is the sidecar's own app data dir (derived from
 `ANTIGRAVITY_EXECUTABLE_DATA_DIR`). Opened standalone without it, the board

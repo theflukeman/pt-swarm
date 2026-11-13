@@ -76,6 +76,9 @@ class SwarmToolHandlers:
     def handle_swarm(self, **kwargs) -> Dict[str, Any]:
         action = kwargs.get("action")
         caller = self._effective_caller(kwargs)
+        # Reconcile `session` requests with the model the session is running before
+        # answering, so `status`, `models`, and `add` all report live selectors.
+        self.bm.sync_session_models()
 
         if action == "status":
             members_info = self.bm.read_members()
@@ -337,6 +340,7 @@ class SwarmToolHandlers:
     ) -> Dict[str, Any]:
         effective_caller = caller or self.caller
         if status:
+            self.bm.sync_session_models()
             members = self.bm.read_members()
             return {"status": "ok", "members": members.get("members", {})}
 
