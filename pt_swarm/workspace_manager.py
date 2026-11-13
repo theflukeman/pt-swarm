@@ -137,7 +137,8 @@ class WorkspaceManager:
             except OSError:
                 return
         if target_dir.exists() and mode == "share" and not (target_dir / ".git").exists():
-            shutil.rmtree(target_dir, ignore_errors=True)
+            # Keep fallback copies: without Git metadata, worker changes cannot be checked safely.
+            return
         if target_dir.exists() and mode == "branch":
             try:
                 status = subprocess.run(
@@ -146,11 +147,34 @@ class WorkspaceManager:
                     capture_output=True,
                     text=True,
                 )
+                head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(target_dir),
+                    capture_output=True,
+                    text=True,
+                )
+                source_head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(self.repo_root),
+                    capture_output=True,
+                    text=True,
+                )
+                merged = subprocess.run(
+                    ["git", "merge-base", "--is-ancestor", head.stdout.strip(), source_head.stdout.strip()],
+                    cwd=str(self.repo_root),
+                    capture_output=True,
+                )
             except OSError:
                 return
-            if status.returncode != 0 or status.stdout.strip():
+            if (
+                status.returncode != 0
+                or status.stdout.strip()
+                or head.returncode != 0
+                or source_head.returncode != 0
+                or merged.returncode != 0
+            ):
                 return
             shutil.rmtree(target_dir, ignore_errors=True)
         elif target_dir.exists() and mode != "share":
-            # Non-Git fallback copies contain no commits to preserve.
-            shutil.rmtree(target_dir, ignore_errors=True)
+            # Keep fallback copies: without Git metadata, worker changes cannot be checked safely.
+            return
