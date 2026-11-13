@@ -86,10 +86,10 @@ See [**PORTING_MANIFEST.md**](./PORTING_MANIFEST.md) for full technical rational
 1. The user talks to the **Coordinator**.
 2. For a multi-faceted task, the Coordinator splits the work into independent chunks.
 3. The Coordinator calls `swarm(action="add", name="<worker>", brief="...")`.
-4. The brief is posted to the board as `@<worker> <brief>` and passed to the worker as its initial prompt.
+4. The brief is posted to the board as `@<worker> <brief>`. With no process spawner configured, `swarm` returns a `swarm-worker` delegation and the coordinator starts it as a native subagent; configured external spawners continue to launch workers themselves.
 
 ### 2. The Worker Loop
-1. Workers run in separate sessions with their own tools (`polytoken exec`, spawned by `worker_runner.py`).
+1. Workers run in separate sessions with their own tools. Native workers are started by the coordinator; external workers can be spawned by `worker_runner.py` when configured.
 2. When finished or handing off, the worker posts to the board with `@<next_peer>`.
 3. The worker calls `swarm_wait(since=LAST_SEEN)` to sleep with zero token consumption until pinged.
 

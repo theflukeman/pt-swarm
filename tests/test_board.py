@@ -216,6 +216,65 @@ class TestBoardManagerCompatibility(unittest.TestCase):
         alice_read = self.bm.read_members()["members"]["alice"]["last_read_seq"]
         self.assertLess(alice_read, m_other["seq"])
 
+    def test_add_without_spawner_returns_delegation_and_does_not_spawn(self):
+        result = self.tools.handle_swarm(action="add", name="delegated", brief="Fix the bug")
+        self.assertFalse(result["spawned"])
+        self.assertEqual(result["mode"], "delegated")
+        self.assertEqual(result["delegation"]["subagent_type"], "swarm-worker")
+        self.assertEqual(result["delegation"]["name"], "delegated")
+        self.assertIn('caller="delegated"', result["delegation"]["prompt"])
+        self.assertIn("Fix the bug", result["delegation"]["prompt"])
+        self.assertEqual(self.bm.read_members()["members"]["delegated"]["phase"], "delegated")
+        self.assertTrue(any("@delegated Fix the bug" in m["text"] for m in self.bm.read_messages(since=0)["messages"]))
+
+    def test_explicit_delegated_mode_and_sharded_delegations(self):
+        runner = WorkerProcessManager(
+            swarm_dir=self.test_dir,
+            workspace_root=self.test_dir,
+            in_process_spawner=lambda _spec: self.fail("explicit delegation must not spawn"),
+        )
+        tools = SwarmToolHandlers(self.bm, worker_runner=runner)
+        single = tools.handle_swarm(action="add", name="native", brief="Native", mode="delegated")
+        self.assertFalse(single["spawned"])
+        self.assertIn('caller="native"', single["delegation"]["prompt"])
+        shards = tools.handle_swarm(
+            action="add", name="slice", brief="Review", tasks=["one", "two"], mode="delegated"
+        )
+        self.assertEqual(len(shards["delegations"]), 2)
+        self.assertIn("Your assigned slice (2/2): two", shards["delegations"][1]["prompt"])
+        self.assertEqual(self.bm.read_members()["members"]["slice-1"]["phase"], "delegated")
+
+    def test_bind_updates_harness_job_state_and_rejects_unknown_member(self):
+        self.tools.handle_swarm(action="add", name="bound", brief="Work")
+        running = self.tools.handle_swarm(action="bind", name="bound", job_id="job-1", state="running")
+        self.assertEqual(running["status"], "bound")
+        member = self.bm.read_members()["members"]["bound"]
+        self.assertEqual(member["job_id"], "job-1")
+        self.assertEqual(member["state"], "running")
+        self.assertEqual(member["phase"], "running")
+        done = self.tools.handle_swarm(action="bind", name="bound", job_id="job-1", state="done")
+        self.assertEqual(done["status"], "bound")
+        self.assertEqual(self.bm.read_members()["members"]["bound"]["phase"], "done")
+        missing = self.tools.handle_swarm(action="bind", name="nobody", job_id="job-2", state="failed")
+        self.assertIn("error", missing)
+        invalid = self.tools.handle_swarm(action="bind", name="bound", job_id="job-1", state="pending")
+        self.assertIn("error", invalid)
+
+    def test_status_marks_bound_running_members_unverified(self):
+        # The board server cannot query the harness for a job's liveness, so a
+        # bound member that claims to be running must say so as unverified
+        # rather than reading as confirmed live.
+        self.tools.handle_swarm(action="add", name="watched", brief="Work")
+        self.tools.handle_swarm(action="bind", name="watched", job_id="job-9", state="running")
+        roster = self.tools.handle_swarm(action="status")["roster"]
+        self.assertEqual(roster["watched"]["liveness"], "unverified")
+        self.assertEqual(roster["watched"]["phase"], "running")
+
+        self.tools.handle_swarm(action="bind", name="watched", job_id="job-9", state="done")
+        roster = self.tools.handle_swarm(action="status")["roster"]
+        self.assertNotIn("liveness", roster["watched"])
+        self.assertEqual(roster["watched"]["phase"], "done")
+
     def test_add_member_rejects_existing_or_killed_name(self):
         self.tools.handle_swarm(action="add", name="worker_x", brief="Task 1")
         dup = self.tools.handle_swarm(action="add", name="worker_x", brief="Task 2")

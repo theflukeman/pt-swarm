@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .board_manager import BoardManager, MAIN_CHANNEL
 from .model_selection import FULL_SELECTOR, MINI_SELECTOR, NANO_SELECTOR
+from .worker_runner import WorkerProcessManager
 
 
 def _polytoken_binary() -> Optional[str]:
@@ -88,10 +89,20 @@ class SwarmToolHandlers:
         if action == "status":
             members_info = self.bm.read_members()
             channels_info = self.bm.channel_registry()
+            # The board server cannot ask the harness whether a job is still
+            # alive, so a bound member that claims to be running is reported as
+            # unverified rather than as confirmed live. Every other phase was
+            # reported explicitly by someone and needs no qualifier.
+            roster: Dict[str, Any] = {}
+            for member_name, member in (members_info.get("members") or {}).items():
+                entry = dict(member)
+                if entry.get("job_id") and entry.get("phase") == "running":
+                    entry["liveness"] = "unverified"
+                roster[member_name] = entry
             res: Dict[str, Any] = {
                 "status": "ok",
                 "title": members_info.get("title", ""),
-                "roster": members_info.get("members", {}),
+                "roster": roster,
             }
             if channels_info:
                 res["channels"] = channels_info
@@ -162,6 +173,20 @@ class SwarmToolHandlers:
                     )
             return res
 
+        elif action == "bind":
+            name = kwargs.get("name")
+            job_id = kwargs.get("job_id")
+            state = kwargs.get("state")
+            if not name:
+                return {"error": "Missing 'name' parameter"}
+            if not job_id:
+                return {"error": "Missing 'job_id' parameter"}
+            if state not in ("running", "done", "failed"):
+                return {"error": "Invalid 'state' parameter (must be running, done, or failed)"}
+            if not self.bm.bind_member(name, job_id, state):
+                return {"error": f"Member '{name}' not found"}
+            return {"status": "bound", "name": name, "job_id": job_id, "state": state}
+
         elif action == "add":
             base_name = kwargs.get("name")
             brief = kwargs.get("brief", "")
@@ -169,6 +194,12 @@ class SwarmToolHandlers:
             workspace_mode = kwargs.get("workspace", "inherit")
             channels = kwargs.get("channels")
             fork = kwargs.get("fork")
+            explicit_delegated = kwargs.get("mode") == "delegated"
+            has_spawner = (
+                not explicit_delegated
+                and self.worker_runner is not None
+                and getattr(self.worker_runner, "has_spawner", True)
+            )
             tasks: Optional[List[str]] = kwargs.get("tasks")
             raw_n = kwargs.get("n")
             if raw_n is not None:
@@ -192,6 +223,7 @@ class SwarmToolHandlers:
                 count = len(tasks) if (isinstance(tasks, list) and len(tasks) > 0) else n_copies
                 added_members = []
                 brief_seqs = []
+                shard_briefs = []
                 for idx in range(1, count + 1):
                     shard_name = f"{base_name}-{idx}"
                     shard_brief = (
@@ -206,6 +238,7 @@ class SwarmToolHandlers:
                             workspace_mode=workspace_mode,
                             channels=channels,
                             fork=fork,
+                            phase="RUNNING" if has_spawner else "delegated",
                         )
                     except ValueError as e:
                         return {"error": str(e)}
@@ -215,7 +248,7 @@ class SwarmToolHandlers:
                         channel=post_channel,
                         kind="brief",
                     )
-                    if self.worker_runner is not None:
+                    if has_spawner:
                         self.worker_runner.spawn_or_wake(
                             name=shard_name,
                             prompt_text=shard_brief,
@@ -226,6 +259,7 @@ class SwarmToolHandlers:
                         )
                     added_members.append(shard_name)
                     brief_seqs.append(post["seq"])
+                    shard_briefs.append(shard_brief)
 
                 return {
                     "status": "added",
@@ -234,8 +268,18 @@ class SwarmToolHandlers:
                     "model": m_entry["desired_model"],
                     "applied_model": m_entry["applied_model"],
                     "brief_seqs": brief_seqs,
+                    "spawned": has_spawner,
+                    "mode": "external" if has_spawner else "delegated",
+                    "delegations": [
+                        {
+                            "subagent_type": "swarm-worker",
+                            "name": shard_name,
+                            "prompt": WorkerProcessManager.initial_input(shard_name, shard_brief, seq),
+                        }
+                        for shard_name, shard_brief, seq in zip(added_members, shard_briefs, brief_seqs)
+                    ] if not has_spawner else [],
                     "note": (
-                        f"Spawned {len(added_members)} workers ({added_members[0]}..{added_members[-1]}). "
+                        f"Added {len(added_members)} workers ({added_members[0]}..{added_members[-1]}). "
                         f"Briefs posted as #{brief_seqs[0]}..#{brief_seqs[-1]}."
                     ),
                 }
@@ -248,6 +292,7 @@ class SwarmToolHandlers:
                     workspace_mode=workspace_mode,
                     channels=channels,
                     fork=fork,
+                    phase="RUNNING" if has_spawner else "delegated",
                 )
             except ValueError as e:
                 return {"error": str(e)}
@@ -258,7 +303,7 @@ class SwarmToolHandlers:
                 kind="brief",
             )
             spawn_info = None
-            if self.worker_runner is not None:
+            if has_spawner:
                 spawn_info = self.worker_runner.spawn_or_wake(
                     name=base_name,
                     prompt_text=brief,
@@ -276,8 +321,19 @@ class SwarmToolHandlers:
                 "conversation_id": m_entry["conversation_id"],
                 "note": f"The brief is on the board as #{post['seq']}, where every member of the swarm can read it.",
             }
-            if spawn_info:
-                res["process"] = spawn_info
+            if has_spawner:
+                if spawn_info:
+                    res["process"] = spawn_info
+                res["spawned"] = bool(spawn_info and spawn_info.get("spawned"))
+                res["mode"] = spawn_info.get("mode", "external") if spawn_info else "external"
+            else:
+                res["spawned"] = False
+                res["mode"] = "delegated"
+                res["delegation"] = {
+                    "subagent_type": "swarm-worker",
+                    "name": base_name,
+                    "prompt": WorkerProcessManager.initial_input(base_name, brief, post["seq"]),
+                }
             return res
 
         elif action == "kill":

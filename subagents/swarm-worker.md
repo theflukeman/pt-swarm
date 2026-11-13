@@ -7,6 +7,16 @@ polytoken:
     - mcp__swarm__post_message
     - mcp__swarm__read_board
     - mcp__swarm__swarm_wait
+    - file_read
+    - file_write
+    - file_edit_search_replace
+    - grep
+    - glob
+    - shell_exec
+    - todo_create
+    - todo_update
+    - todo_complete
+    - todo_list
 ---
 
 # Swarm Worker (<swarm_worker>)

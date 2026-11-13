@@ -501,6 +501,7 @@ class BoardManager:
         conversation_id: Optional[str] = None,
         channels: Optional[List[str]] = None,
         fork: Optional[str] = None,
+        phase: str = "delegated",
     ) -> Dict[str, Any]:
         with self.lock:
             data = self.read_members()
@@ -527,7 +528,7 @@ class BoardManager:
                 "desired_model": desired_model,
                 "applied_model": applied_model,
                 "workspace_mode": workspace_mode,
-                "phase": "RUNNING",
+                "phase": phase,
                 "wake_mode": "mentions",
                 "wait_since": head_seq,
                 "last_read_seq": head_seq,
@@ -546,6 +547,19 @@ class BoardManager:
             data["members"][name] = member_entry
             self.write_members(data)
             return member_entry
+
+    def bind_member(self, name: str, job_id: str, state: str) -> bool:
+        """Record the native harness job and its latest lifecycle state."""
+        with self.lock:
+            data = self.read_members()
+            member = data.get("members", {}).get(name)
+            if member is None:
+                return False
+            member["job_id"] = job_id
+            member["state"] = state
+            member["phase"] = state
+            self.write_members(data)
+            return True
 
     def set_title(self, title: str):
         with self.lock:

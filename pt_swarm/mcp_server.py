@@ -19,15 +19,15 @@ TOOLS = [
         "name": "swarm",
         "description": (
             "Manage the swarm of agents working on the shared message board. "
-            "Actions: status, models, add, model, kill, title, channel."
+            "Actions: status, models, add, bind, model, kill, title, channel."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "models", "add", "model", "kill", "title", "channel"],
-                    "description": "Action to perform: status, models, add, model, kill, title, or channel.",
+                    "enum": ["status", "models", "add", "bind", "model", "kill", "title", "channel"],
+                    "description": "Action to perform: status, models, add, bind, model, kill, title, or channel.",
                 },
                 "name": {
                     "type": "string",
@@ -36,6 +36,20 @@ TOOLS = [
                 "brief": {
                     "type": "string",
                     "description": "The worker's assignment for add: what it owns and what done looks like.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["delegated"],
+                    "description": "Force coordinator-mediated subagent delegation for add.",
+                },
+                "job_id": {
+                    "type": "string",
+                    "description": "Harness background job handle for bind action.",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["running", "done", "failed"],
+                    "description": "Latest harness job state for bind action.",
                 },
                 "model": {
                     "type": "string",

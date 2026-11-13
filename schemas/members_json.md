@@ -69,7 +69,9 @@ Tracks the active roster, member configuration, and execution status.
 
 ### Wake Modes & Lifecycle Fields:
 - `wake_mode`: `"working"` (active), `"mentions"` (parked in `swarm_wait` for `@name`/`@all`/`@#channel`), or `"anything"` (parked for any visible message).
-- `phase` / `desired_state`: `"RUNNING"` or `"KILLED"`.
+- `phase`: external workers use `"RUNNING"` or `"KILLED"`; delegated native workers begin as `"delegated"` until the coordinator binds their harness job, then use `"running"`, `"done"`, or `"failed"`.
+- `desired_state`: `"RUNNING"` or `"KILLED"`.
+- `job_id` / `state`: the native harness job handle and its latest reported state, recorded by `swarm(action="bind")`.
 - `killed`: `true` when terminated permanently; killed names stay reserved and cannot be reused.
 
 ### Model Fields:

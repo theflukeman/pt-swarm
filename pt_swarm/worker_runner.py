@@ -105,6 +105,24 @@ class WorkerProcessManager:
             return [polytoken_bin, "exec", "--model", "{model}", "{prompt}"]
         return None
 
+    @property
+    def has_spawner(self) -> bool:
+        return self.in_process_spawner is not None or bool(self.worker_cmd_template)
+
+    @staticmethod
+    def initial_input(name: str, prompt_text: str, brief_seq: int = 0) -> str:
+        identity_hint = (
+            f'You are `{name}` on the swarm board. Pass caller="{name}" on every '
+            f"swarm tool call so your posts, reads, and wake-ups are attributed to you.\n\n"
+        )
+        body = (
+            f"You have just started. Your assignment (recorded on the board as #{brief_seq} for @{name}):\n\n"
+            f"{prompt_text}"
+            if brief_seq > 0
+            else prompt_text
+        )
+        return identity_hint + body
+
     @staticmethod
     def _expand_cmd(template: List[str], values: Dict[str, str]) -> List[str]:
         """Substitute placeholders, dropping the model flag when none resolved.
@@ -183,17 +201,7 @@ class WorkerProcessManager:
                 return {"spawned": False, "status": "already_running", "name": name}
 
             work_dir = self.workspace_manager.provision_workspace(name, mode=workspace_mode)
-            identity_hint = (
-                f'You are `{name}` on the swarm board. Pass caller="{name}" on every '
-                f"swarm tool call so your posts, reads, and wake-ups are attributed to you.\n\n"
-            )
-            body = (
-                f"You have just started. Your assignment (recorded on the board as #{brief_seq} for @{name}):\n\n"
-                f"{prompt_text}"
-                if brief_seq > 0
-                else prompt_text
-            )
-            initial_input = identity_hint + body
+            initial_input = self.initial_input(name, prompt_text, brief_seq)
 
             # The roster's model field is a request, not a selector: `default` is the
             # sentinel for "use this role's tier" and `session` means the model this
