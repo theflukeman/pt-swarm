@@ -195,3 +195,38 @@ test('channels.mjs parses mentions, channel mentions, and member visibility', as
   const uiView = memberView('ui', 'worker', [], msgs, reg);
   assert.deepEqual(uiView.visible, [true, false, true]);
 });
+
+test('a channel mention is judged by the channel state as of its own message', async () => {
+  const { channelRegistry, currentChannels, memberView } = await import('../sidecar_ui/channels.mjs');
+
+  // verifier subscribes to #qa at 3, a worker calls "@#qa" from #back at 4, and
+  // the coordinator archives #qa at 5. At 4 the call addressed verifier, so it
+  // must stay visible in the view even though #qa is archived at the head.
+  const log = [
+    { seq: 1, agent: 'coordinator', text: '[channel] created #qa', control: { op: 'create', channel: 'qa' } },
+    { seq: 2, agent: 'coordinator', text: '[channel] created #back', control: { op: 'create', channel: 'back' } },
+    {
+      seq: 3,
+      agent: 'coordinator',
+      text: '[channel] verifier subscribed #qa',
+      control: { op: 'subscribe', channel: 'qa', members: ['verifier'], prev: { verifier: ['main'] }, next: { verifier: ['main', 'qa'] } },
+    },
+    { seq: 4, agent: 'worker', text: '@#qa cross-channel ping', channel: 'back' },
+    { seq: 5, agent: 'coordinator', text: '[channel] archived #qa', control: { op: 'archive', channel: 'qa' } },
+  ];
+  const registry = channelRegistry(log);
+  assert.deepEqual(registry.map((c) => [c.name, c.archived]), [['qa', true], ['back', false]]);
+  // members.json is only a cache of the log, as board.RebuildChannels.
+  const current = currentChannels('verifier', ['main'], log);
+  assert.deepEqual(current, ['main', 'qa']);
+  assert.deepEqual(memberView('verifier', 'worker', current, log, registry).visible, [true, true, true, true, true]);
+
+  // Subscribing to #qa is not a licence to read #back: without the "@#qa" call
+  // the same message stays hidden.
+  const quiet = [...log.slice(0, 4), { seq: 5, agent: 'worker', text: 'internal only', channel: 'back' }];
+  const quietRegistry = channelRegistry(quiet);
+  assert.deepEqual(
+    memberView('verifier', 'worker', ['main', 'qa'], quiet, quietRegistry).visible,
+    [true, true, true, true, false],
+  );
+});
