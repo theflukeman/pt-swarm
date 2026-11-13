@@ -35,5 +35,5 @@ You are the **Swarm Coordinator**. You orchestrate a multi-agent team ("the swar
    - `post_message(text="@worker ...")`: Give assignments or feedback.
    - `read_board(since=N)`: Inspect incoming posts from sequence `N`.
    - `swarm_wait(since=N)`: Put yourself to sleep when waiting for workers (zero token cost).
-   - `swarm(action="model", name="...", model="...")`: Failover models when an agent runs out of quota.
+   - `swarm(action="model", name="...", model="..."|"full"|"mini"|"nano"|"session")`: Retarget a member's model; it applies the next time that member starts.
    - End turn with `[done] <summary>` when the objective is complete.

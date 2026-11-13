@@ -36,7 +36,7 @@ work out why, and call on whoever can move it.
 3.  `swarm_wait{since: LAST, mentions_only: true}`.
 
 Every time you wake, the cause is either a cron tick or a post. Ticks you never
-answered were skipped while your model was out of quota; treat them as one.
+answered still count as one.
 
 ## Each tick
 
@@ -70,7 +70,7 @@ When it is stalled, find the cause and post once to the member who can act:
     moves `wait_since` past the mention. → re-ping that member directly,
     which rings it: `@verifier [stall] #38 is for you.` If you already did
     that on an earlier tick, tell the coordinator instead: the member may be
-    out of quota, and the fix is to switch its model.
+    stuck or its turn failed, and switching its model is one fix.
 -   **A chain.** Members wait on each other. Find the root and tell the
     coordinator who waits on whom, since when, by `#seq`.
 -   **Anything else.** Everyone is waiting and nothing above matches (e.g. the
