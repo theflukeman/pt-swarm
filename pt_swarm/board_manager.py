@@ -55,25 +55,29 @@ class _CrossProcessLock:
                 self._fh = open(self.lock_file, "a+b")
                 try:
                     self._acquire_os_lock(self._fh)
-                except Exception:
-                    self._fh.close()
-                    self._fh = None
+                except BaseException:
+                    try:
+                        self._fh.close()
+                    finally:
+                        self._fh = None
                     raise
             self._depth += 1
             return self
-        except Exception:
+        except BaseException:
             self._tlock.release()
             raise
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._depth -= 1
-        if self._depth == 0 and self._fh is not None:
-            try:
-                self._release_os_lock(self._fh)
-            finally:
-                self._fh.close()
-                self._fh = None
-        self._tlock.release()
+        try:
+            self._depth -= 1
+            if self._depth == 0 and self._fh is not None:
+                fh, self._fh = self._fh, None
+                try:
+                    self._release_os_lock(fh)
+                finally:
+                    fh.close()
+        finally:
+            self._tlock.release()
 
     @staticmethod
     def _acquire_os_lock(fh, timeout: float = 30.0):
@@ -131,6 +135,7 @@ class BoardManager:
         self.swarm_dir.mkdir(parents=True, exist_ok=True)
         self.board_file = self.swarm_dir / "board.jsonl"
         self.members_file = self.swarm_dir / "members.json"
+        self.sequence_file = self.swarm_dir / ".board.seq"
         self.lock = _CrossProcessLock(self.swarm_dir / ".board.lock")
         self._new_message_cond = threading.Condition()
         self._message_epoch = 0
@@ -170,6 +175,10 @@ class BoardManager:
                 self._atomic_write_json(self.members_file, initial_members)
             if not self.board_file.exists():
                 self.board_file.touch()
+            if not self.sequence_file.exists():
+                messages = self.read_raw_messages()
+                high_water = max((int(m.get("seq", 0)) for m in messages), default=0)
+                self._write_sequence_high_water(high_water)
 
     def sync_session_models(self) -> None:
         """Re-resolve `session` requests against the model this session is running.
@@ -221,6 +230,39 @@ class BoardManager:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+            raise
+
+    def _read_sequence_high_water(self) -> int:
+        try:
+            value = int(self.sequence_file.read_text(encoding="ascii").strip())
+        except FileNotFoundError:
+            return max((int(m.get("seq", 0)) for m in self.read_raw_messages()), default=0)
+        if value < 0:
+            raise ValueError("sequence high-water mark must be non-negative")
+        return value
+
+    def _write_sequence_high_water(self, value: int) -> None:
+        target = self.sequence_file
+        fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as out:
+                out.write(f"{value}\n")
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(tmp_path, target)
+            try:
+                dir_fd = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
             raise
 
     @staticmethod
@@ -335,17 +377,34 @@ class BoardManager:
     ) -> Dict[str, Any]:
         mentioned_targets: List[str] = []
         with self.lock:
+            # Validate the roster before any board or sequence state is mutated.
+            if not self.members_file.exists():
+                raise FileNotFoundError(f"Member roster not found: {self.members_file}")
+            members_data = self.read_members()
+            members_map = members_data.get("members", {})
             messages = self.read_raw_messages()
-            next_seq = max((int(m.get("seq", 0)) for m in messages), default=0) + 1
-            # A JSONL append must start on a fresh line. Discard an incomplete final
-            # record so it cannot merge with the next valid post.
-            if self.board_file.exists():
-                with open(self.board_file, "rb+") as board:
-                    raw = board.read()
-                    if raw and not raw.endswith(b"\n"):
-                        board.seek(raw.rfind(b"\n") + 1)
-                        board.truncate()
+            high_water = max(self._read_sequence_high_water(), max((int(m.get("seq", 0)) for m in messages), default=0))
+            next_seq = high_water + 1
 
+            # Preserve a complete final JSON record even when it lacks its line
+            # terminator; discard only an invalid/torn record before appending.
+            with open(self.board_file, "rb+") as board:
+                raw = board.read()
+                if raw and not raw.endswith(b"\n"):
+                    tail_start = raw.rfind(b"\n") + 1
+                    try:
+                        json.loads(raw[tail_start:].decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeError):
+                        board.seek(tail_start)
+                        board.truncate()
+                    else:
+                        board.seek(0, os.SEEK_END)
+                        board.write(b"\n")
+                        board.flush()
+                        os.fsync(board.fileno())
+
+            # Reserve before append/ack so a torn post cannot cause sequence reuse.
+            self._write_sequence_high_water(next_seq)
             entry: Dict[str, Any] = {
                 "seq": next_seq,
                 "agent": agent,
@@ -427,31 +486,34 @@ class BoardManager:
                 raise
             return msgs
 
-    def _channels_at_seq(
-        self, reader: str, member_info: Dict[str, Any], seq: int,
-        messages: List[Dict[str, Any]],
-    ) -> List[str]:
-        """Return the reader's effective channel membership at a message sequence."""
-        touching = [
-            m for m in messages
-            if isinstance(m.get("control"), dict)
-            and m["control"].get("op") in ("subscribe", "unsubscribe")
-            and reader in m["control"].get("members", [])
+    def _channel_membership_by_seq(
+        self, reader: str, member_info: Dict[str, Any], messages: List[Dict[str, Any]],
+    ) -> Dict[int, Set[str]]:
+        """Replay membership events once and index access at each message sequence."""
+        events = [
+            message for message in messages
+            if isinstance(message.get("control"), dict)
+            and message["control"].get("op") in ("subscribe", "unsubscribe")
+            and reader in message["control"].get("members", [])
         ]
         state = self.effective_channels(
             member_info.get("role", "worker"), member_info.get("channels"), reader
         )
-        if touching:
-            prior = touching[0]["control"].get("prev", {}).get(reader)
+        if events:
+            prior = events[0]["control"].get("prev", {}).get(reader)
             if isinstance(prior, list):
                 state = prior
-        for event in touching:
-            if event.get("seq", 0) >= seq:
-                break
-            next_state = event["control"].get("next", {}).get(reader)
-            if isinstance(next_state, list):
-                state = next_state
-        return state
+        result: Dict[int, Set[str]] = {}
+        event_index = 0
+        for message in messages:
+            seq = message.get("seq", 0)
+            while event_index < len(events) and events[event_index].get("seq", 0) < seq:
+                next_state = events[event_index]["control"].get("next", {}).get(reader)
+                if isinstance(next_state, list):
+                    state = next_state
+                event_index += 1
+            result[seq] = set(state)
+        return result
 
     def _member_sees(
         self,
@@ -460,13 +522,16 @@ class BoardManager:
         msg: Dict[str, Any],
         active_channels: Set[str],
         messages: List[Dict[str, Any]],
+        channel_memberships: Optional[Dict[int, Set[str]]] = None,
     ) -> bool:
         if reader == "coordinator":
             return True
         msg_ch = msg.get("channel") or MAIN_CHANNEL
         if msg_ch == MAIN_CHANNEL or msg.get("agent") == reader:
             return True
-        eff = self._channels_at_seq(reader, member_info, msg.get("seq", 0), messages)
+        if channel_memberships is None:
+            channel_memberships = self._channel_membership_by_seq(reader, member_info, messages)
+        eff = channel_memberships.get(msg.get("seq", 0), set())
         if ALL_CHANNELS in eff or msg_ch in eff:
             return True
         text = msg.get("text", "")
@@ -495,6 +560,9 @@ class BoardManager:
             active_chs = {
                 c["name"] for c in self.channel_registry(all_msgs) if not c.get("archived")
             }
+            channel_memberships = (
+                self._channel_membership_by_seq(reader, member_info, all_msgs) if reader else None
+            )
 
             if seqs is not None:
                 try:
@@ -504,7 +572,7 @@ class BoardManager:
                 selected = [
                     m for m in all_msgs
                     if m.get("seq") in seq_set
-                    and (not reader or self._member_sees(reader, member_info, m, active_chs, all_msgs))
+                    and (not reader or self._member_sees(reader, member_info, m, active_chs, all_msgs, channel_memberships))
                 ]
                 return {"messages": selected, "head": head_seq}
 
@@ -512,13 +580,20 @@ class BoardManager:
 
             if channel and channel != ALL_CHANNELS:
                 filtered = [
-                    m for m in filtered if (m.get("channel") or MAIN_CHANNEL) == channel
+                    m for m in filtered
+                    if (m.get("channel") or MAIN_CHANNEL) == channel
+                    and (
+                        not reader
+                        or self._member_sees(
+                            reader, member_info, m, active_chs, all_msgs, channel_memberships
+                        )
+                    )
                 ]
             elif reader:
                 filtered = [
                     m
                     for m in filtered
-                    if self._member_sees(reader, member_info, m, active_chs, all_msgs)
+                    if self._member_sees(reader, member_info, m, active_chs, all_msgs, channel_memberships)
                 ]
 
             returned = filtered[:limit]
@@ -808,22 +883,21 @@ class BoardManager:
                     active_chs = {
                         c["name"] for c in self.channel_registry(msgs) if not c.get("archived")
                     }
+                    channel_memberships = self._channel_membership_by_seq(
+                        reader_name, member_info, msgs
+                    )
 
                     matching: List[Dict[str, Any]] = []
                     for m in new_msgs:
                         if m.get("agent") == reader_name:
                             continue
                         if not mentions_only:
-                            if self._member_sees(reader_name, member_info, m, active_chs, msgs):
+                            if self._member_sees(reader_name, member_info, m, active_chs, msgs, channel_memberships):
                                 matching.append(m)
                         else:
                             text = m.get("text", "")
                             mentioned, is_all, chs = self.parse_mentions(text, known_names)
-                            eff = self.effective_channels(
-                                member_info.get("role", "worker"),
-                                member_info.get("channels"),
-                                reader_name,
-                            )
+                            eff = channel_memberships.get(m.get("seq", 0), set())
                             ch_hit = any(
                                 c != MAIN_CHANNEL
                                 and c in active_chs

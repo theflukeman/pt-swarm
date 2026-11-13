@@ -369,26 +369,96 @@ class TestBoardManagerReviewRegressions(unittest.TestCase):
     def test_torn_tail_is_repaired_before_next_post(self):
         self.tools.handle_post_message(text="one", caller="coordinator")
         self.tools.handle_post_message(text="two", caller="coordinator")
+        # Simulate a crash after reserving sequence 3 but before completing its append.
+        self.bm._write_sequence_high_water(3)
         with self.bm.board_file.open("ab") as f:
             f.write(b'{"seq": 3, "agent": "partial"')
         posted = self.tools.handle_post_message(text="after repair", caller="coordinator")
         messages = self.bm.read_raw_messages()
-        self.assertEqual(posted["seq"], 3)
-        self.assertEqual([m["seq"] for m in messages], [1, 2, 3])
+        self.assertEqual(posted["seq"], 4)
+        self.assertEqual([m["seq"] for m in messages], [1, 2, 4])
         self.assertEqual(messages[-1]["text"], "after repair")
+
+    def test_complete_json_without_newline_is_preserved(self):
+        acknowledged = self.bm.post_message("verifier", "persisted")
+        raw = self.bm.board_file.read_bytes().rstrip(b"\\n")
+        self.bm.board_file.write_bytes(raw)
+        following = self.bm.post_message("coordinator", "next")
+        self.assertEqual(following["seq"], acknowledged["seq"] + 1)
+        self.assertEqual([m["text"] for m in self.bm.read_raw_messages()], ["persisted", "next"])
+
+    def test_post_validates_roster_before_appending(self):
+        self.bm.members_file.write_text('{"members":', encoding="utf-8")
+        board_before = self.bm.board_file.read_bytes()
+        with self.assertRaises(json.JSONDecodeError):
+            self.bm.post_message("verifier", "must not append")
+        self.assertEqual(self.bm.board_file.read_bytes(), board_before)
+        self.bm.members_file.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.bm.post_message("verifier", "must not append")
+        self.assertEqual(self.bm.board_file.read_bytes(), board_before)
 
     def test_lock_acquisition_failure_releases_thread_lock(self):
         lock = self.bm.lock
         lock.lock_file = self.test_dir / "not-a-directory" / "lock"
         (self.test_dir / "not-a-directory").mkdir()
-        with patch.object(lock, "_acquire_os_lock", side_effect=OSError("lock failed")):
-            with self.assertRaises(OSError):
+        with patch.object(lock, "_acquire_os_lock", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
                 with lock:
                     pass
         lock.lock_file.unlink(missing_ok=True)
-        with patch.object(lock, "_acquire_os_lock", return_value=None):
+        acquired = threading.Event()
+        def acquire_after_interrupt():
+            with patch.object(lock, "_acquire_os_lock", return_value=None):
+                with lock:
+                    acquired.set()
+        thread = threading.Thread(target=acquire_after_interrupt)
+        thread.start()
+        thread.join(timeout=2)
+        self.assertTrue(acquired.is_set(), "another thread should acquire after interrupted acquisition")
+
+    def test_lock_close_failure_still_releases_thread_lock(self):
+        lock = self.bm.lock
+        acquired = threading.Event()
+        real_open = open
+        class CloseFailureFile:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+            def close(self):
+                self.wrapped.close()
+                raise OSError("close failed")
+        with patch.object(lock, "_release_os_lock", return_value=None), patch(
+            "builtins.open", side_effect=lambda *args, **kwargs: CloseFailureFile(
+                real_open(*args, **kwargs)
+            )
+        ):
+            with self.assertRaises(OSError):
+                with lock:
+                    pass
+        def acquire_after_close_failure():
             with lock:
-                self.assertEqual(lock._depth, 1)
+                acquired.set()
+        thread = threading.Thread(target=acquire_after_close_failure)
+        thread.start()
+        thread.join(timeout=2)
+        self.assertTrue(acquired.is_set(), "another thread should acquire after close failure")
+
+    def test_lock_release_failure_still_releases_thread_lock(self):
+        lock = self.bm.lock
+        acquired = threading.Event()
+        with patch.object(lock, "_release_os_lock", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                with lock:
+                    pass
+        def acquire_after_release_failure():
+            with lock:
+                acquired.set()
+        thread = threading.Thread(target=acquire_after_release_failure)
+        thread.start()
+        thread.join(timeout=2)
+        self.assertTrue(acquired.is_set(), "another thread should acquire after interrupted release")
 
     def test_subscribing_coordinator_preserves_all_channel_access(self):
         self.tools.handle_swarm(action="channel", op="create", channel="qa")
@@ -405,6 +475,13 @@ class TestBoardManagerReviewRegressions(unittest.TestCase):
         with self.assertRaises((TypeError, ValueError)):
             self.bm.read_messages(reader="outsider", seqs=["abc"])
 
+    def test_explicit_channel_filter_still_enforces_visibility(self):
+        self.bm.manage_channel("coordinator", "create", channel="qa")
+        self.bm.add_member("outsider", channels=[])
+        hidden = self.bm.post_message("coordinator", "hidden", channel="qa")
+        result = self.bm.read_messages(reader="outsider", channel="qa", since=0)
+        self.assertNotIn(hidden["seq"], [m["seq"] for m in result["messages"]])
+
     def test_visibility_uses_membership_at_message_sequence(self):
         self.bm.manage_channel("coordinator", "create", channel="qa")
         self.bm.manage_channel("coordinator", "subscribe", channel="qa", target_name="verifier")
@@ -414,6 +491,15 @@ class TestBoardManagerReviewRegressions(unittest.TestCase):
         visible = self.bm.read_messages(reader="verifier", since=0)["messages"]
         self.assertIn(earlier["seq"], [m["seq"] for m in visible])
         self.assertNotIn(later["seq"], [m["seq"] for m in visible])
+
+    def test_wait_uses_historical_channel_membership_for_activity(self):
+        self.bm.manage_channel("coordinator", "create", channel="qa")
+        self.bm.manage_channel("coordinator", "subscribe", channel="qa", target_name="verifier")
+        first_seq = self.bm.read_messages(reader="coordinator")["head"]
+        self.bm.post_message("coordinator", "@#qa historical call", channel="main")
+        self.bm.manage_channel("coordinator", "unsubscribe", channel="qa", target_name="verifier")
+        result = self.bm.wait_for_event("verifier", since_seq=first_seq, mentions_only=True, timeout=0)
+        self.assertTrue(result["woken"])
 
     def test_archived_channel_can_be_recreated(self):
         self.bm.manage_channel("coordinator", "create", channel="qa", topic="old")
