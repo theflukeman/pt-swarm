@@ -703,9 +703,9 @@
     const myCursor = state.me ? memberOf(state.me)?.last_read_seq ?? null : null;
     const feedKey = JSON.stringify([state.snap.head, state.channel, $('f-search').value, $('f-agent').value,
       $('f-mention').value, $('f-channel').value, [...state.hiddenAgents].sort(), [...state.expanded].sort(),
-      myCursor, [...newSet].sort((a, b) => a - b)]);
+      myCursor, [...newSet].sort((a, b) => a - b), [...(state.snap.members || [])].map((m) => m.name).sort(),
+      [...(state.unseen || [])].sort()]);
     if (feedKey === state.feedKey) return;
-    state.feedKey = feedKey;
     const msgs = visibleMessages();
     let dividerDone = false;
     const html = msgs.map((m) => {
@@ -736,6 +736,7 @@
       scrollToLatest();
     }
     updateJump();
+    state.feedKey = feedKey;
   }
 
   function updateJump() {

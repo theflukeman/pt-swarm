@@ -339,6 +339,11 @@
     return tags.length ? `<div class="o2-mtags">${tags.join('')}</div>` : '';
   }
 
+  function stripMemberPrefix(text, member) {
+    const escaped = String(member || '').replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+    return String(text || '').replace(new RegExp(`^\\s*${escaped}[\\s:—-]+`, 'i'), '');
+  }
+
   function membersView(sc){
     state.style = 'bees';
     const fmtMod = m => String(m||'').replace(/-(?:dropdown|high|medium)$/i,'');
@@ -388,7 +393,7 @@
         statTag = `<span class="o2-mstat">${esc(x.title)}</span>`;
       }
 
-      let bodyLine = isCoord ? (x.now || memberLine('coordinator', x)) : (x.now || '');
+      let bodyLine = isCoord ? (x.now || memberLine('coordinator', x)) : stripMemberPrefix(x.now, n);
       if(!isCoord && st==='needs_you' && x.ask){
         const ac = itemCopy(x.ask.id, x.ask.title, x.ask.why);
         bodyLine = ac.line ? `${ac.title} — ${ac.line}` : ac.title;
@@ -731,7 +736,7 @@
       const refs=Array.isArray(a.refs)?a.refs:[]; const seqRef=refs.find(r=>r&&r.seq); const memRef=refs.find(r=>r&&r.member&&byName.has(r.member)&&byName.get(r.member).role!=='coordinator');
       const p=seqRef?P.find(q=>q.s===seqRef.seq):null; const url=(Array.isArray(a.actions)?a.actions:[]).find(x=>x&&x.type==='url');
       return { id: a.id ? String(a.id) : null, kind:KINDS.includes(a.kind)?a.kind:'fyi', severity:a.severity||'low', title:String(a.title).slice(0,160), why:String(a.why||'').slice(0,300), from: memRef?key(memRef.member):(p?p.a:'coordinator'), seq: (seqRef && Number(seqRef.seq)) || head, url: url?url.target:null }; });
-    (Array.isArray(snap.systemAttention)?snap.systemAttention:[]).forEach(s=>{ if(s && s.member && !isRole(s.member)) attention.push({id: String(s.id || `sys-${s.member}-${s.kind}`), kind: s.kind==='quota'?'quota':s.kind==='stuck'?'stuck':'error', severity:'high', title: s.kind==='quota'?`@${s.member} ran out of quota`:s.kind==='stuck'?`@${s.member} looks stuck`:`@${s.member} hit an error`, why: String(s.text||s.detail||'').slice(0,200), from:key(s.member), seq:head}); });
+    (Array.isArray(snap.systemAttention)?snap.systemAttention:[]).forEach(s=>{ if(s && s.member && !isRole(s.member)) attention.push({id: String(s.id || `sys-${s.member}-${s.kind}`), kind: s.kind==='quota'?'quota':s.kind==='stuck'?'stuck':'error', severity:'high', title: s.kind==='quota'?`@${s.member} ran out of quota`:s.kind==='stuck'?`@${s.member} looks stuck`:`@${s.member} hit an error`, why: stripMemberPrefix(s.text||s.detail||'', s.member).slice(0,200), from:key(s.member), seq:head}); });
     // Short copy the narrator writes next to each item (see swarm_narrator: `short`, `now`).
     (()=>{ const items={}, members={}; const sh=x=>x&&typeof x.short==='object'&&x.short?{title:String(x.short.title||'').slice(0,60), line:String(x.short.line||'').slice(0,90)}:null;
       (Array.isArray(vj.attention)?vj.attention:[]).forEach(a=>{ const s=sh(a); if(s&&a.id) items[String(a.id)]=s; });
@@ -847,11 +852,9 @@
       r.view = view;
       const tab = el.closest('.tab-body');
       if (tab && !tab.classList.contains('active')) return;   // hidden: render when its tab opens
-      try {
-        if (S.etag !== snap.etag) { S.live = toModel(snap); S.etag = snap.etag; }
-        r.etag = snap.etag;
-        render(r.root, view);
-      } catch (e) { console.warn('SwarmHive', e); }
+      if (S.etag !== snap.etag) { S.live = toModel(snap); S.etag = snap.etag; }
+      render(r.root, view);
+      r.etag = snap.etag;
     },
   });
 })();
