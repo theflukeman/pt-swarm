@@ -34,6 +34,36 @@ class WorkspacePreservationTests(unittest.TestCase):
 
         self.assertTrue((workspace / "worker.txt").exists())
 
+    def test_cleanup_preserves_share_worktree_with_ignored_worker_file(self):
+        self._init_git_repo()
+        (self.root / ".gitignore").write_text("worker-output/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "ignore worker output"], cwd=self.root, check=True, capture_output=True)
+        manager = WorkspaceManager(self.root)
+        workspace = manager.provision_workspace("ignored-share", mode="share")
+        ignored_file = workspace / "worker-output" / "result.txt"
+        ignored_file.parent.mkdir()
+        ignored_file.write_text("worker output\n", encoding="utf-8")
+
+        manager.cleanup_workspace("ignored-share", mode="share")
+
+        self.assertEqual(ignored_file.read_text(encoding="utf-8"), "worker output\n")
+
+    def test_cleanup_preserves_clone_with_ignored_worker_file(self):
+        self._init_git_repo()
+        (self.root / ".gitignore").write_text("worker-output/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "ignore worker output"], cwd=self.root, check=True, capture_output=True)
+        manager = WorkspaceManager(self.root)
+        workspace = manager.provision_workspace("ignored-clone", mode="branch")
+        ignored_file = workspace / "worker-output" / "result.txt"
+        ignored_file.parent.mkdir()
+        ignored_file.write_text("worker output\n", encoding="utf-8")
+
+        manager.cleanup_workspace("ignored-clone", mode="branch")
+
+        self.assertEqual(ignored_file.read_text(encoding="utf-8"), "worker output\n")
+
     def test_cleanup_preserves_edited_non_git_share_copy(self):
         (self.root / "base.txt").write_text("base\n", encoding="utf-8")
         manager = WorkspaceManager(self.root)

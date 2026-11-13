@@ -110,7 +110,7 @@ class WorkspaceManager:
                 )
                 if is_worktree:
                     status = subprocess.run(
-                        ["git", "status", "--porcelain"],
+                        ["git", "status", "--porcelain", "--ignored"],
                         cwd=str(target_dir), capture_output=True, text=True,
                     )
                     head = subprocess.run(
@@ -142,7 +142,7 @@ class WorkspaceManager:
         if target_dir.exists() and mode == "branch":
             try:
                 status = subprocess.run(
-                    ["git", "status", "--porcelain"],
+                    ["git", "status", "--porcelain", "--ignored"],
                     cwd=str(target_dir),
                     capture_output=True,
                     text=True,
