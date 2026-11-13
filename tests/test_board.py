@@ -5,12 +5,13 @@ Comprehensive unit and integration tests for pt-swarm:
 - Pagination last_read_seq accuracy & explicit seqs lookup
 - Channel lifecycle (create, subscribe, unsubscribe, archive, visibility, @#channel)
 - Sharded spawning (n & tasks), group kill, and WorkerProcessManager integration
-- Concurrent multi-thread writes & atomic members.json persistence
+- Concurrent thread/process writes & atomic members.json persistence
 - MCP Server JSON-RPC 2.0 round-trip verification
 """
 
 import io
 import json
+import multiprocessing
 import shutil
 import tempfile
 import threading
@@ -23,6 +24,12 @@ from pt_swarm import mcp_server
 from pt_swarm.board_manager import BoardManager
 from pt_swarm.swarm_tools import SwarmToolHandlers
 from pt_swarm.worker_runner import WorkerProcessManager
+
+
+def _post_from_process(swarm_dir, name, count):
+    manager = BoardManager(Path(swarm_dir))
+    for index in range(count):
+        manager.post_message(name, f"{name}-{index}")
 
 
 class TestBoardManagerCompatibility(unittest.TestCase):
@@ -283,10 +290,12 @@ class TestBoardManagerCompatibility(unittest.TestCase):
         reuse = self.tools.handle_swarm(action="add", name="worker_x", brief="Task 3")
         self.assertIn("error", reuse)
 
-    def test_n_zero_rejected_and_extra_mcp_args_ignored(self):
+    def test_n_zero_rejected_and_unknown_mcp_args_rejected_without_mutation(self):
         res_n0 = self.tools.handle_swarm(action="add", name="bad", brief="Nope", n=0)
         self.assertIn("error", res_n0)
 
+        before_board = self.bm.board_file.read_text(encoding="utf-8")
+        before_cursor = self.bm.read_members()["members"]["coordinator"]["last_read_seq"]
         out_buf = io.StringIO()
         with patch("sys.stdout", out_buf):
             mcp_server.handle_rpc_request(
@@ -302,11 +311,16 @@ class TestBoardManagerCompatibility(unittest.TestCase):
                 },
             )
         resp = json.loads(out_buf.getvalue().splitlines()[0])
-        self.assertFalse(resp["result"]["isError"])
+        self.assertEqual(resp["error"]["code"], -32602)
+        self.assertEqual(resp["error"]["message"], "Invalid params")
+        self.assertEqual(self.bm.board_file.read_text(encoding="utf-8"), before_board)
+        self.assertEqual(
+            self.bm.read_members()["members"]["coordinator"]["last_read_seq"], before_cursor
+        )
 
     def test_wait_for_event_sets_anything_wake_mode(self):
         out = self.tools.handle_swarm_wait(
-            since=0, mentions_only=False, timeout_seconds=0.05, caller="verifier"
+            since=0, mentions_only=False, timeout_seconds=0, caller="verifier"
         )
         self.assertIn("Waiting for any message", out)
         # During wait_for_event with mentions_only=False, wake_mode must be "anything"
@@ -319,6 +333,159 @@ class TestBoardManagerCompatibility(unittest.TestCase):
             self.bm.wait_for_event("verifier", since_seq=8, mentions_only=False, timeout=0.01)
         self.assertEqual(recorded[0], "anything")
         self.assertEqual(recorded[-1], "working")
+
+
+class TestBoardManagerReviewRegressions(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp())
+        self.bm = BoardManager(self.test_dir)
+        self.bm.add_member("verifier", role="worker", channels=[])
+        self.tools = SwarmToolHandlers(self.bm, caller_agent_name="coordinator")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_corrupt_roster_is_not_replaced_by_a_persist(self):
+        original = '{"title": "kept", "members":'
+        self.bm.members_file.write_text(original, encoding="utf-8")
+        with self.assertRaises((json.JSONDecodeError, OSError)):
+            self.bm.set_title("replacement")
+        self.assertEqual(self.bm.members_file.read_text(encoding="utf-8"), original)
+
+    def test_filtered_read_then_catchup_preserves_other_channel_messages(self):
+        self.tools.handle_swarm(action="channel", op="create", channel="qa")
+        self.tools.handle_swarm(action="add", name="reader", brief="Read", channels=["qa"])
+        self.tools.handle_post_message(text="main unread", caller="coordinator")
+        qa_msg = self.tools.handle_post_message(text="qa message", channel="qa", caller="coordinator")
+        members = self.bm.read_members()
+        members["members"]["reader"]["last_read_seq"] = 0
+        self.bm.write_members(members)
+        filtered = self.bm.read_messages(since=0, channel="qa", reader="reader")
+        self.assertIn(qa_msg["seq"], [m["seq"] for m in filtered["messages"]])
+        self.assertEqual(self.bm.read_members()["members"]["reader"]["last_read_seq"], 0)
+        catchup = self.bm.read_messages(since=0, reader="reader")
+        self.assertTrue(any(m["text"] == "main unread" for m in catchup["messages"]))
+
+    def test_torn_tail_is_repaired_before_next_post(self):
+        self.tools.handle_post_message(text="one", caller="coordinator")
+        self.tools.handle_post_message(text="two", caller="coordinator")
+        with self.bm.board_file.open("ab") as f:
+            f.write(b'{"seq": 3, "agent": "partial"')
+        posted = self.tools.handle_post_message(text="after repair", caller="coordinator")
+        messages = self.bm.read_raw_messages()
+        self.assertEqual(posted["seq"], 3)
+        self.assertEqual([m["seq"] for m in messages], [1, 2, 3])
+        self.assertEqual(messages[-1]["text"], "after repair")
+
+    def test_lock_acquisition_failure_releases_thread_lock(self):
+        lock = self.bm.lock
+        lock.lock_file = self.test_dir / "not-a-directory" / "lock"
+        (self.test_dir / "not-a-directory").mkdir()
+        with patch.object(lock, "_acquire_os_lock", side_effect=OSError("lock failed")):
+            with self.assertRaises(OSError):
+                with lock:
+                    pass
+        lock.lock_file.unlink(missing_ok=True)
+        with patch.object(lock, "_acquire_os_lock", return_value=None):
+            with lock:
+                self.assertEqual(lock._depth, 1)
+
+    def test_subscribing_coordinator_preserves_all_channel_access(self):
+        self.tools.handle_swarm(action="channel", op="create", channel="qa")
+        self.bm.manage_channel("coordinator", "subscribe", channel="qa")
+        entry = self.bm.read_members()["members"]["coordinator"]
+        self.assertIn("*", self.bm.effective_channels("coordinator", entry.get("channels"), "coordinator"))
+
+    def test_explicit_sequence_lookup_obeys_visibility_and_rejects_bad_ids(self):
+        self.tools.handle_swarm(action="channel", op="create", channel="secret")
+        self.tools.handle_swarm(action="add", name="outsider", brief="No access")
+        hidden = self.tools.handle_post_message(text="classified", channel="secret", caller="coordinator")
+        result = self.bm.read_messages(reader="outsider", seqs=[hidden["seq"]])
+        self.assertEqual(result["messages"], [])
+        with self.assertRaises((TypeError, ValueError)):
+            self.bm.read_messages(reader="outsider", seqs=["abc"])
+
+    def test_visibility_uses_membership_at_message_sequence(self):
+        self.bm.manage_channel("coordinator", "create", channel="qa")
+        self.bm.manage_channel("coordinator", "subscribe", channel="qa", target_name="verifier")
+        earlier = self.bm.post_message("coordinator", "visible while subscribed", channel="qa")
+        self.bm.manage_channel("coordinator", "unsubscribe", channel="qa", target_name="verifier")
+        later = self.bm.post_message("coordinator", "hidden after unsubscribe", channel="qa")
+        visible = self.bm.read_messages(reader="verifier", since=0)["messages"]
+        self.assertIn(earlier["seq"], [m["seq"] for m in visible])
+        self.assertNotIn(later["seq"], [m["seq"] for m in visible])
+
+    def test_archived_channel_can_be_recreated(self):
+        self.bm.manage_channel("coordinator", "create", channel="qa", topic="old")
+        self.bm.manage_channel("coordinator", "archive", channel="qa")
+        result = self.bm.manage_channel("coordinator", "create", channel="qa", topic="new")
+        self.assertEqual(result["status"], "created")
+        channel = {c["name"]: c for c in self.bm.channel_registry()}["qa"]
+        self.assertFalse(channel["archived"])
+        self.assertEqual(channel["topic"], "new")
+
+    def test_mention_name_characters_match_dashboard_unicode_rule(self):
+        self.assertEqual(self.bm.parse_mentions("@agent²", ["agent"])[0], ["agent"])
+        self.assertEqual(self.bm.parse_mentions("@agent⅛", ["agent"])[0], ["agent"])
+        self.assertEqual(self.bm.parse_mentions("@agenté", ["agent"])[0], [])
+        self.assertEqual(self.bm.parse_mentions("@agent_1", ["agent_1"])[0], ["agent_1"])
+
+    def test_mention_callback_failure_is_reported(self):
+        def fail(*_args):
+            raise RuntimeError("callback broke")
+        self.bm.on_member_mentioned = fail
+        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.bm.post_message("coordinator", "@verifier check")
+        self.assertIn("callback broke", stderr.getvalue())
+
+    @unittest.skipIf(__import__("sys").platform == "win32", "POSIX flock-specific checks")
+    def test_posix_lock_wait_is_bounded(self):
+        lock_type = self.bm.lock.__class__
+        with self.bm.lock.lock_file.open("a+b") as handle:
+            with patch("pt_swarm.board_manager.time.monotonic", side_effect=[0.0, 31.0]):
+                with patch("pt_swarm.board_manager.fcntl.flock", side_effect=BlockingIOError()):
+                    with self.assertRaises(TimeoutError):
+                        lock_type._acquire_os_lock(handle, timeout=30)
+
+    def test_concurrent_process_posts_have_unique_sequences(self):
+        context = multiprocessing.get_context("spawn")
+        processes = [
+            context.Process(target=_post_from_process, args=(str(self.test_dir), f"proc-{i}", 4))
+            for i in range(2)
+        ]
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=15)
+        self.assertTrue(all(process.exitcode == 0 for process in processes))
+        seqs = [m["seq"] for m in self.bm.read_raw_messages()]
+        self.assertEqual(len(seqs), 8)
+        self.assertEqual(len(set(seqs)), 8)
+
+    def test_concurrent_thread_posts_have_unique_sequences(self):
+        barrier = threading.Barrier(8)
+        errors = []
+        def post(index):
+            try:
+                barrier.wait()
+                self.bm.post_message(f"thread-{index}", f"message {index}")
+            except Exception as exc:
+                errors.append(exc)
+        threads = [threading.Thread(target=post, args=(i,)) for i in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(errors, [])
+        seqs = [m["seq"] for m in self.bm.read_raw_messages()]
+        self.assertEqual(len(seqs), 8)
+        self.assertEqual(len(set(seqs)), 8)
+
+    def test_wait_for_event_restores_wake_mode_after_exception(self):
+        with patch.object(self.bm, "read_raw_messages", side_effect=RuntimeError("read failed")):
+            with self.assertRaisesRegex(RuntimeError, "read failed"):
+                self.bm.wait_for_event("verifier", since_seq=8, timeout=1)
+        self.assertEqual(self.bm.read_members()["members"]["verifier"]["wake_mode"], "working")
 
 
 if __name__ == "__main__":

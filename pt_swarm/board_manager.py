@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import uuid
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -27,7 +28,11 @@ MAIN_CHANNEL = "main"
 ALL_CHANNELS = "*"
 RESERVED_CHANNELS = {"main", "all", "here"}
 CHANNEL_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
-NAME_RUNE_RE = re.compile(r"[\w-]", re.UNICODE)
+NAME_RUNE_RE = re.compile(r"[_-]")
+
+
+def _is_name_rune(char: str) -> bool:
+    return bool(NAME_RUNE_RE.fullmatch(char)) or unicodedata.category(char) in ("Lu", "Ll", "Lt", "Lm", "Lo", "Nd")
 SHARD_SUFFIX_RE = re.compile(r"^(.+)-\d+$")
 ALL_BY_ROLE = {"coordinator", "narrator", "monitor"}
 ROLE_WORKER_NAME_RE = re.compile(r"^(?:narrator|monitor)(?:-\d+)?$")
@@ -44,12 +49,21 @@ class _CrossProcessLock:
 
     def __enter__(self):
         self._tlock.acquire()
-        if self._depth == 0:
-            self.lock_file.parent.mkdir(parents=True, exist_ok=True)
-            self._fh = open(self.lock_file, "a+b")
-            self._acquire_os_lock(self._fh)
-        self._depth += 1
-        return self
+        try:
+            if self._depth == 0:
+                self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+                self._fh = open(self.lock_file, "a+b")
+                try:
+                    self._acquire_os_lock(self._fh)
+                except Exception:
+                    self._fh.close()
+                    self._fh = None
+                    raise
+            self._depth += 1
+            return self
+        except Exception:
+            self._tlock.release()
+            raise
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._depth -= 1
@@ -82,7 +96,15 @@ class _CrossProcessLock:
                         raise TimeoutError(f"Timed out waiting for board lock after {timeout}s") from e
                     time.sleep(0.01)
         else:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out waiting for board lock after {timeout}s") from exc
+                    time.sleep(0.01)
 
     @staticmethod
     def _release_os_lock(fh):
@@ -215,12 +237,12 @@ class BoardManager:
             return False
         idx = lower_text.find("@")
         while idx >= 0:
-            if idx > 0 and NAME_RUNE_RE.match(lower_text[idx - 1]):
+            if idx > 0 and _is_name_rune(lower_text[idx - 1]):
                 idx = lower_text.find("@", idx + 1)
                 continue
             if lower_text.startswith(lower_name, idx + 1):
                 end_idx = idx + 1 + len(lower_name)
-                if end_idx >= len(lower_text) or not NAME_RUNE_RE.match(lower_text[end_idx]):
+                if end_idx >= len(lower_text) or not _is_name_rune(lower_text[end_idx]):
                     return True
             idx = lower_text.find("@", idx + 1)
         return False
@@ -238,11 +260,11 @@ class BoardManager:
         out: List[str] = []
         idx = lower.find("@#")
         while idx >= 0:
-            if idx > 0 and NAME_RUNE_RE.match(lower[idx - 1]):
+            if idx > 0 and _is_name_rune(lower[idx - 1]):
                 idx = lower.find("@#", idx + 1)
                 continue
             j = idx + 2
-            while j < len(lower) and NAME_RUNE_RE.match(lower[j]):
+            while j < len(lower) and _is_name_rune(lower[j]):
                 j += 1
             ch_name = lower[idx + 2 : j]
             if (
@@ -284,7 +306,7 @@ class BoardManager:
             if not isinstance(ch, str) or not ch:
                 continue
             op = c.get("op")
-            if op == "create" and ch not in by_name:
+            if op == "create" and (ch not in by_name or by_name[ch].get("archived")):
                 by_name[ch] = {
                     "name": ch,
                     "topic": str(c.get("topic") or ""),
@@ -314,7 +336,15 @@ class BoardManager:
         mentioned_targets: List[str] = []
         with self.lock:
             messages = self.read_raw_messages()
-            next_seq = (messages[-1]["seq"] + 1) if messages else 1
+            next_seq = max((int(m.get("seq", 0)) for m in messages), default=0) + 1
+            # A JSONL append must start on a fresh line. Discard an incomplete final
+            # record so it cannot merge with the next valid post.
+            if self.board_file.exists():
+                with open(self.board_file, "rb+") as board:
+                    raw = board.read()
+                    if raw and not raw.endswith(b"\n"):
+                        board.seek(raw.rfind(b"\n") + 1)
+                        board.truncate()
 
             entry: Dict[str, Any] = {
                 "seq": next_seq,
@@ -373,24 +403,55 @@ class BoardManager:
             for target_name in mentioned_targets:
                 try:
                     self.on_member_mentioned(target_name, entry)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    print(f"BoardManager mention callback failed for {target_name}: {exc}", file=sys.stderr)
 
         return entry
 
     def read_raw_messages(self) -> List[Dict[str, Any]]:
-        if not self.board_file.exists():
-            return []
-        msgs = []
-        with open(self.board_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        msgs.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-        return msgs
+        with self.lock:
+            if not self.board_file.exists():
+                return []
+            msgs = []
+            try:
+                with open(self.board_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                msgs.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue
+            except (OSError, UnicodeError) as exc:
+                print(f"Unable to read board file {self.board_file}: {exc}", file=sys.stderr)
+                raise
+            return msgs
+
+    def _channels_at_seq(
+        self, reader: str, member_info: Dict[str, Any], seq: int,
+        messages: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Return the reader's effective channel membership at a message sequence."""
+        touching = [
+            m for m in messages
+            if isinstance(m.get("control"), dict)
+            and m["control"].get("op") in ("subscribe", "unsubscribe")
+            and reader in m["control"].get("members", [])
+        ]
+        state = self.effective_channels(
+            member_info.get("role", "worker"), member_info.get("channels"), reader
+        )
+        if touching:
+            prior = touching[0]["control"].get("prev", {}).get(reader)
+            if isinstance(prior, list):
+                state = prior
+        for event in touching:
+            if event.get("seq", 0) >= seq:
+                break
+            next_state = event["control"].get("next", {}).get(reader)
+            if isinstance(next_state, list):
+                state = next_state
+        return state
 
     def _member_sees(
         self,
@@ -398,15 +459,14 @@ class BoardManager:
         member_info: Dict[str, Any],
         msg: Dict[str, Any],
         active_channels: Set[str],
+        messages: List[Dict[str, Any]],
     ) -> bool:
         if reader == "coordinator":
             return True
         msg_ch = msg.get("channel") or MAIN_CHANNEL
         if msg_ch == MAIN_CHANNEL or msg.get("agent") == reader:
             return True
-        eff = self.effective_channels(
-            member_info.get("role", "worker"), member_info.get("channels"), reader
-        )
+        eff = self._channels_at_seq(reader, member_info, msg.get("seq", 0), messages)
         if ALL_CHANNELS in eff or msg_ch in eff:
             return True
         text = msg.get("text", "")
@@ -437,8 +497,15 @@ class BoardManager:
             }
 
             if seqs is not None:
-                seq_set = {int(s) for s in seqs}
-                selected = [m for m in all_msgs if m.get("seq") in seq_set]
+                try:
+                    seq_set = {int(s) for s in seqs}
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("seqs must contain integer sequence IDs") from exc
+                selected = [
+                    m for m in all_msgs
+                    if m.get("seq") in seq_set
+                    and (not reader or self._member_sees(reader, member_info, m, active_chs, all_msgs))
+                ]
                 return {"messages": selected, "head": head_seq}
 
             filtered = [m for m in all_msgs if m.get("seq", 0) > since]
@@ -451,7 +518,7 @@ class BoardManager:
                 filtered = [
                     m
                     for m in filtered
-                    if self._member_sees(reader, member_info, m, active_chs)
+                    if self._member_sees(reader, member_info, m, active_chs, all_msgs)
                 ]
 
             returned = filtered[:limit]
@@ -459,7 +526,10 @@ class BoardManager:
             # Advance last_read_seq accurately based on what was actually returned
             if reader and reader in members_map:
                 prev_read = members_map[reader].get("last_read_seq", 0)
-                if len(filtered) <= limit and (not channel or channel == ALL_CHANNELS):
+                if channel and channel != ALL_CHANNELS:
+                    # A channel view is partial and cannot establish a global read cursor.
+                    new_read = prev_read
+                elif len(filtered) <= limit:
                     # Reader caught up to head on their visible stream
                     new_read = max(prev_read, head_seq)
                 elif returned:
@@ -483,10 +553,7 @@ class BoardManager:
         with self.lock:
             if not self.members_file.exists():
                 return {"members": {}}
-            try:
-                return json.loads(self.members_file.read_text(encoding="utf-8"))
-            except Exception:
-                return {"members": {}}
+            return json.loads(self.members_file.read_text(encoding="utf-8"))
 
     def write_members(self, data: Dict[str, Any]):
         with self.lock:
@@ -643,7 +710,7 @@ class BoardManager:
                 return {"error": f"Invalid or reserved channel name: '{channel}'"}
 
             if op == "create":
-                if channel in reg_map:
+                if channel in reg_map and not reg_map[channel].get("archived"):
                     return {"status": "exists", "channel": channel, "topic": reg_map[channel]["topic"]}
                 ctrl = {"op": "create", "channel": channel, "topic": topic}
                 self.post_message(
@@ -674,7 +741,9 @@ class BoardManager:
                     return {"error": f"Member '{member_name}' not found"}
 
                 m_info = members_map[member_name]
-                prev_channels = list(m_info.get("channels") or [])
+                prev_channels = list(m_info.get("channels") or self.effective_channels(
+                    m_info.get("role", "worker"), m_info.get("channels"), member_name
+                ))
                 next_channels = list(prev_channels)
 
                 if op == "subscribe":
@@ -745,7 +814,7 @@ class BoardManager:
                         if m.get("agent") == reader_name:
                             continue
                         if not mentions_only:
-                            if self._member_sees(reader_name, member_info, m, active_chs):
+                            if self._member_sees(reader_name, member_info, m, active_chs, msgs):
                                 matching.append(m)
                         else:
                             text = m.get("text", "")
