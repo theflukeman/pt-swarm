@@ -19,5 +19,8 @@ dist/
 # Node
 node_modules/
 
+# Pack artifacts
+*.tgz
+
 # OS / editor
 .DS_Store

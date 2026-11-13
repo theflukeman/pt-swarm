@@ -134,7 +134,12 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
 
 1. **Install the Python package & CLI entrypoints**:
    ```bash
-   pip install .        # or: pipx install . / pip install --user .
+   pip install --user .
+   # Homebrew and most distro Pythons are PEP 668 "externally managed" and
+   # reject a bare `pip install .`:
+   #   pip install --user --break-system-packages .
+   # `--user` keeps the install in ~/.local and leaves the interpreter's own
+   # site-packages untouched. Isolated alternative: `pipx install .`.
    ```
    This registers `polytoken-swarm-mcp` (`polytoken_swarm.mcp_server:main`) and `polytoken-swarm-cli` (`polytoken_swarm.cli:main`) on your `PATH`, and installs the role prompts, tool schemas, and example config inside the package.
 
@@ -150,6 +155,8 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
    ```
    Polytoken launches stdio MCP servers with the **project directory as the working directory**, so `./.swarm/default` isolates each workspace's board to that project.
 
+   Because this entry sits in the *global* config, every project now gets a swarm: a session creates `.swarm/default/` lazily on first use. To enable it in selected projects only, put the same block in that project's `.polytoken/config.yaml` instead.
+
 3. **Environment variables must be declared**: MCP stdio children start with a *cleared* environment. Only `HOME`, `PATH`, `LANG`, and `TMPDIR` are passed by default; anything else (for example `POLYTOKEN_WORKER_CMD` or `POLYTOKEN_BIN`) must appear under `env:` or `pass_env:` for that server. Variables exported in your shell are not visible to the server.
 
 4. **Copy subagents & skills globally** (prefer copying over symlinking so the global setup survives moving or deleting this checkout):
@@ -162,11 +169,15 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
 
 5. **Install the Web UI globally** (optional):
    ```bash
-   npm install -g .
+   npm pack
+   npm install -g --prefix ~/.local ./polytoken-swarm-1.0.0.tgz
+   rm -f polytoken-swarm-1.0.0.tgz
    # run it with:
    POLYTOKEN_SWARM_DIR=./.swarm/default polytoken-swarm-ui
    ```
    The dashboard binds `127.0.0.1:5388` by default; override with `HOST` and `PORT`.
+
+   Two packaging details matter: installing from the folder (`npm install -g .`) creates a *symlink* back to this checkout, so the global command breaks if the checkout moves — install the packed tarball for a self-contained copy. And when npm's default prefix is not writable (common with Homebrew or distro Node), pass `--prefix ~/.local`; its `bin/` directory must be on `PATH`.
 
 6. **Worker process spawning**:
    `WorkerProcessManager` launches workers with `polytoken exec "<prompt>"`, which needs `polytoken` on `PATH` (passed through by default). To use a different command, set `POLYTOKEN_WORKER_CMD` in the MCP server's `env:`, for example:
@@ -176,6 +187,15 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
    ```
    Supported placeholders: `{prompt}`, `{name}`, `{model}`, `{workspace}`, `{swarm_dir}`.
    A worker that exits during startup is reported as a failed spawn (`spawned: false` with its exit code and log tail) rather than a running agent.
+
+7. **Uninstall**:
+   ```bash
+   pip uninstall polytoken-swarm
+   npm uninstall -g --prefix ~/.local polytoken-swarm
+   rm -rf ~/.config/polytoken/skills/{native_swarm,swarm_monitor,swarm_narrator}
+   rm -f ~/.config/polytoken/subagents/swarm-{coordinator,monitor,narrator,worker}.md
+   # finally, remove the `mcp_servers.swarm` block from the global config
+   ```
 
 ---
 
