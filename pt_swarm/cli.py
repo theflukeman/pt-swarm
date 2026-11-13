@@ -1,7 +1,7 @@
 """
 Lightweight Terminal CLI viewer for Swarm Boards.
 Usage:
-  python3 -m polytoken_swarm.cli [--swarm-dir .swarm/default] [--watch]
+  python3 -m pt_swarm.cli [--swarm-dir .swarm/default] [--watch]
 """
 
 import argparse

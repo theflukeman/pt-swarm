@@ -1,11 +1,11 @@
 {
-  "name": "polytoken-swarm",
+  "name": "pt-swarm",
   "version": "1.0.0",
   "type": "module",
   "description": "Unofficial, unaffiliated live swarm board dashboard (message board, roster, and @mention graph) for the Polytoken swarm MCP server.",
   "main": "sidecar_ui/main.mjs",
   "bin": {
-    "polytoken-swarm-ui": "./sidecar_ui/main.mjs"
+    "pt-swarm-ui": "./sidecar_ui/main.mjs"
   },
   "files": [
     "sidecar_ui/"

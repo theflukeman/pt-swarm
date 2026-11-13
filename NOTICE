@@ -1,4 +1,4 @@
-polytoken-swarm
+pt-swarm
 Copyright (c) 2026 theflukeman
 
 This repository is an independent, unofficial port of the Antigravity Swarm
@@ -33,7 +33,7 @@ whatever terms apply upstream. No license is granted for them by this project:
 Derived material
 ----------------
 
-The role prompts in polytoken_swarm/agent_definitions/ were written for this
+The role prompts in pt_swarm/agent_definitions/ were written for this
 port, but they describe and restate Antigravity's swarm worker, coordinator,
 monitor, and narrator behavior. Treat them as derived from that design rather
 than as wholly original text.
@@ -47,7 +47,7 @@ Authored for this port
 
 The MIT license applies to, among other things:
 
-  polytoken_swarm/          board engine, MCP server, worker supervisor,
+  pt_swarm/          board engine, MCP server, worker supervisor,
                             workspace isolation, stall monitor, adapter, CLI,
                             tool schemas, and agent prompts
   sidecar_ui/sidecar_sdk/   standalone shim that lets the dashboard run

@@ -1,5 +1,5 @@
 """
-Comprehensive unit and integration tests for Polytoken Swarm:
+Comprehensive unit and integration tests for pt-swarm:
 - Live Antigravity fixture compatibility
 - Mention boundary & shard prefix rules (mirroring channels.mjs)
 - Pagination last_read_seq accuracy & explicit seqs lookup
@@ -19,10 +19,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from polytoken_swarm import mcp_server
-from polytoken_swarm.board_manager import BoardManager
-from polytoken_swarm.swarm_tools import SwarmToolHandlers
-from polytoken_swarm.worker_runner import WorkerProcessManager
+from pt_swarm import mcp_server
+from pt_swarm.board_manager import BoardManager
+from pt_swarm.swarm_tools import SwarmToolHandlers
+from pt_swarm.worker_runner import WorkerProcessManager
 
 
 class TestBoardManagerCompatibility(unittest.TestCase):

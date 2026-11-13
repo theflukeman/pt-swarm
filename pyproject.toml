@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "polytoken-swarm"
+name = "pt-swarm"
 version = "1.0.0"
 description = "Unofficial port of the Antigravity Native Swarm skill, MCP server, tools, and UI for the Polytoken harness."
 readme = "README.md"
@@ -23,14 +23,14 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
-polytoken-swarm-mcp = "polytoken_swarm.mcp_server:main"
-polytoken-swarm-cli = "polytoken_swarm.cli:main"
+pt-swarm-mcp = "pt_swarm.mcp_server:main"
+pt-swarm-cli = "pt_swarm.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["polytoken_swarm*"]
+include = ["pt_swarm*"]
 
 [tool.setuptools.package-data]
-polytoken_swarm = [
+pt_swarm = [
     "agent_definitions/*.md",
     "tool_schemas/*.json",
     "config.example.json",

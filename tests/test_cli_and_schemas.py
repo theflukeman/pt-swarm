@@ -13,11 +13,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from polytoken_swarm import cli, mcp_server
-from polytoken_swarm.board_manager import BoardManager
-from polytoken_swarm.harness_adapter import PolytokenSwarmAdapter
-from polytoken_swarm.swarm_tools import SwarmToolHandlers
-from polytoken_swarm.workspace_manager import WorkspaceManager
+from pt_swarm import cli, mcp_server
+from pt_swarm.board_manager import BoardManager
+from pt_swarm.harness_adapter import PolytokenSwarmAdapter
+from pt_swarm.swarm_tools import SwarmToolHandlers
+from pt_swarm.workspace_manager import WorkspaceManager
 
 
 class TestCliAndSchemas(unittest.TestCase):
@@ -50,7 +50,7 @@ class TestCliAndSchemas(unittest.TestCase):
         self.assertIn("@parser start work", out2.getvalue())
 
     def test_tool_schemas_match_mcp_server_tools(self):
-        schemas_dir = Path(__file__).resolve().parent.parent / "polytoken_swarm" / "tool_schemas"
+        schemas_dir = Path(__file__).resolve().parent.parent / "pt_swarm" / "tool_schemas"
         mcp_by_name = {t["name"]: t for t in mcp_server.TOOLS}
         self.assertEqual(
             set(mcp_by_name.keys()),
@@ -153,16 +153,16 @@ class TestCliAndSchemas(unittest.TestCase):
     def test_packaging_includes_agent_definitions_and_sidecar_bin(self):
         root = Path(__file__).resolve().parent.parent
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('include = ["polytoken_swarm*"]', pyproject)
+        self.assertIn('include = ["pt_swarm*"]', pyproject)
         self.assertIn("agent_definitions/*.md", pyproject)
         self.assertIn("tool_schemas/*.json", pyproject)
         # Runtime data must live inside the installed package, not beside it.
         for rel in ("agent_definitions/worker.md", "tool_schemas/swarm.json", "config.example.json"):
-            self.assertTrue((root / "polytoken_swarm" / rel).exists(), f"Missing {rel}")
+            self.assertTrue((root / "pt_swarm" / rel).exists(), f"Missing {rel}")
         self.assertEqual(
             sorted(
                 p.name
-                for p in (root / "polytoken_swarm").iterdir()
+                for p in (root / "pt_swarm").iterdir()
                 if p.is_dir() and not p.name.startswith("__")
             ),
             ["agent_definitions", "tool_schemas"],
@@ -176,7 +176,7 @@ class TestCliAndSchemas(unittest.TestCase):
             self.assertTrue(len(adapter.load_system_prompt(role)) > 0, f"Empty prompt for {role}")
 
         pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual(pkg.get("bin", {}).get("polytoken-swarm-ui"), "./sidecar_ui/main.mjs")
+        self.assertEqual(pkg.get("bin", {}).get("pt-swarm-ui"), "./sidecar_ui/main.mjs")
         self.assertTrue((root / "sidecar_ui" / "sidecar_sdk" / "index.mjs").exists())
 
 
@@ -220,7 +220,7 @@ class TestWorkspaceManagerModes(unittest.TestCase):
         self.assertFalse(ws.exists())
 
         # Also verify git clone command shape when git clone succeeds
-        with patch("polytoken_swarm.workspace_manager.subprocess.run") as mock_run:
+        with patch("pt_swarm.workspace_manager.subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "true\n"
             ws2 = wm.provision_workspace("cloned2", mode="branch")

@@ -1,14 +1,14 @@
 # AGENTS.md
 
-Guidance for AI coding agents working in **polytoken-swarm**.
+Guidance for AI coding agents working in **pt-swarm**.
 
 ## Project Overview
 
-`polytoken-swarm` is a port of the Antigravity Swarm multi-agent orchestration system for Polytoken and general LLM harnesses. Agents coordinate through an append-only JSONL message board (`board.jsonl`), a member roster (`members.json`), zero-token sleep (`swarm_wait`), and an optional Node.js live dashboard (`sidecar_ui/`).
+`pt-swarm` is a port of the Antigravity Swarm multi-agent orchestration system for Polytoken and general LLM harnesses. Agents coordinate through an append-only JSONL message board (`board.jsonl`), a member roster (`members.json`), zero-token sleep (`swarm_wait`), and an optional Node.js live dashboard (`sidecar_ui/`).
 
 ## Repository Layout
 
-- `polytoken_swarm/` — the single installed package (everything runtime needs lives here):
+- `pt_swarm/` — the single installed package (everything runtime needs lives here):
   - `mcp_server.py` — JSON-RPC 2.0 stdio MCP server exposing `swarm`, `post_message`, `read_board`, and `swarm_wait`.
   - `board_manager.py` — Cross-process file-locked `BoardManager`, `@mention` / `@#channel` parser, channel registry, and `wait_for_event` condition loop.
   - `swarm_tools.py` — `SwarmToolHandlers` implementing tool dispatch and validation.
@@ -55,7 +55,7 @@ Use `python3`; some systems have no `python` alias.
 - **Worker Spawning**: The default worker command is `polytoken exec {prompt}` — a bare `polytoken` starts the TUI, which exits immediately without a TTY. `spawn_or_wake()` must verify the child survived `spawn_grace_seconds` and report `spawned: false` with the exit code otherwise.
 - **PID Tracking**: `<swarm_dir>/pids/<name>.pid` stores JSON `{"pid": N, "start": "<marker>"}`. On Linux the marker comes from `/proc/<pid>/stat` so a recycled PID is not mistaken for a live worker. Plain-integer contents are still accepted for older state.
 - **Cross-Process Workers**: `WorkerProcessManager` tracks PIDs on disk so separate `mcp_server.py` processes do not spawn duplicate workers. Always close `log_fh` in the parent process after `subprocess.Popen`.
-- **Schema Parity**: Keep `polytoken_swarm/mcp_server.py` (`TOOLS`), `polytoken_swarm/tool_schemas/*.json`, `polytoken_swarm/swarm_tools.py`, and `schemas/*.md` in sync (`test_tool_schemas_match_mcp_server_tools` enforces schema/MCP parity).
+- **Schema Parity**: Keep `pt_swarm/mcp_server.py` (`TOOLS`), `pt_swarm/tool_schemas/*.json`, `pt_swarm/swarm_tools.py`, and `schemas/*.md` in sync (`test_tool_schemas_match_mcp_server_tools` enforces schema/MCP parity).
 - **Model List**: `swarm(action="models")` must report models discovered from `polytoken models --format json` (via the injectable `model_lister` in tests), never a hardcoded provider list.
 - **stdout is the wire**: In server code paths, diagnostics go to `sys.stderr`; writing to stdout corrupts the JSON-RPC stream.
 - **Windows Compatibility**: Support both Windows (`msvcrt`, `\` paths, `path.delimiter`, `shlex.split` quote handling) and POSIX (`fcntl`, `/` paths). In Node tests, set `SIDECAR_NO_LISTEN=1` when importing `sidecar_ui/main.mjs` to test routes in-process.

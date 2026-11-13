@@ -1,4 +1,4 @@
-"""Polytoken Swarm: board engine, MCP server, adapter, and CLI."""
+"""pt-swarm: board engine, MCP server, adapter, and CLI."""
 
 from .board_manager import BoardManager
 from .harness_adapter import PolytokenSwarmAdapter

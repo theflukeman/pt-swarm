@@ -1,1 +1,1 @@
-"""Polytoken Swarm Test Suite."""
+"""pt-swarm Test Suite."""

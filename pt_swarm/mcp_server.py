@@ -1,5 +1,5 @@
 """
-Model Context Protocol (MCP) Server for Polytoken Swarm.
+Model Context Protocol (MCP) Server for pt-swarm.
 Exposes swarm, post_message, read_board, and swarm_wait over JSON-RPC 2.0 stdio.
 Compatible with Polytoken's `mcp_servers` configuration.
 """
@@ -255,7 +255,7 @@ def handle_rpc_request(handlers: SwarmToolHandlers, req: Dict[str, Any]) -> None
             req_id,
             {
                 "protocolVersion": negotiate_protocol_version(params.get("protocolVersion")),
-                "serverInfo": {"name": "polytoken-swarm", "version": "1.0.0"},
+                "serverInfo": {"name": "pt-swarm", "version": "1.0.0"},
                 "capabilities": {"tools": {}},
             },
         )

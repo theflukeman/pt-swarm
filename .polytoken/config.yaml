@@ -8,7 +8,7 @@ mcp_servers:
     command: python3
     args:
       - "-m"
-      - "polytoken_swarm.mcp_server"
+      - "pt_swarm.mcp_server"
     env:
       POLYTOKEN_SWARM_DIR: "./.swarm/default"
       POLYTOKEN_AGENT_NAME: "coordinator"

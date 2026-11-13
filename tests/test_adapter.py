@@ -15,11 +15,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from polytoken_swarm.board_manager import BoardManager
-from polytoken_swarm.harness_adapter import PolytokenSwarmAdapter
-from polytoken_swarm.stall_monitor import SwarmStallMonitor
-from polytoken_swarm.worker_runner import WorkerProcessManager
-from polytoken_swarm.workspace_manager import WorkspaceManager
+from pt_swarm.board_manager import BoardManager
+from pt_swarm.harness_adapter import PolytokenSwarmAdapter
+from pt_swarm.stall_monitor import SwarmStallMonitor
+from pt_swarm.worker_runner import WorkerProcessManager
+from pt_swarm.workspace_manager import WorkspaceManager
 
 
 class TestWorkerProcessManager(unittest.TestCase):
@@ -84,7 +84,7 @@ class TestWorkerProcessManager(unittest.TestCase):
         # default must be the headless `exec` subcommand.
         env = {k: v for k, v in os.environ.items() if k not in ("POLYTOKEN_WORKER_CMD", "POLYTOKEN_BIN")}
         with patch.dict(os.environ, env, clear=True):
-            with patch("polytoken_swarm.worker_runner.shutil.which", return_value="/opt/bin/polytoken"):
+            with patch("pt_swarm.worker_runner.shutil.which", return_value="/opt/bin/polytoken"):
                 cmd = WorkerProcessManager._resolve_default_cmd()
         self.assertEqual(cmd, ["/opt/bin/polytoken", "exec", "{prompt}"])
 

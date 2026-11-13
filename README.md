@@ -1,4 +1,4 @@
-# Polytoken Swarm: Multi-Agent Parallel Collaboration System
+# pt-swarm: Multi-Agent Parallel Collaboration System
 
 This package is a complete port of the **Antigravity Swarm** architecture, packaged and adapted for the **Polytoken** harness (and general multi-agent runtimes).
 
@@ -13,7 +13,7 @@ It enables multiple autonomous AI agents to work in parallel on separated tasks,
 ## Package Contents
 
 ```
-polytoken-swarm/
+pt-swarm/
 ├── README.md                      # Architecture guide & integration instructions
 ├── AGENTS.md                      # AI agent guidance, invariants, and TDD commands
 ├── PORTING_MANIFEST.md            # Detailed provenance (rebuilt vs adapted breakdown)
@@ -24,7 +24,7 @@ polytoken-swarm/
 ├── plugin.json                    # Antigravity/Polytoken plugin descriptor
 ├── assets/
 │   └── logo.svg
-├── polytoken_swarm/               # The single installed package
+├── pt_swarm/               # The single installed package
 │   ├── __init__.py
 │   ├── mcp_server.py              # JSON-RPC 2.0 stdio MCP server
 │   ├── board_manager.py           # File-locked board, @mention parser, wait loop
@@ -60,7 +60,7 @@ polytoken-swarm/
     └── test_sidecar_ui.mjs
 ```
 
-Everything the runtime needs is inside `polytoken_swarm/`, so an installed copy is self-contained. `skills/`, `subagents/`, and `.polytoken/` are copied into Polytoken's configuration directories, not imported.
+Everything the runtime needs is inside `pt_swarm/`, so an installed copy is self-contained. `skills/`, `subagents/`, and `.polytoken/` are copied into Polytoken's configuration directories, not imported.
 
 ---
 
@@ -73,10 +73,10 @@ See [**PORTING_MANIFEST.md**](./PORTING_MANIFEST.md) for full technical rational
   * Live UI dashboard: `sidecar_ui/*`
   * Metadata and icons: `plugin.json`, `assets/logo.svg`
 * **Rebuilt / Reverse-Engineered for Polytoken**:
-  * **Tool Schemas** (`polytoken_swarm/tool_schemas/*.json`): formalized from internal RPC definitions.
-  * **Board & Tool Engine** (`polytoken_swarm/board_manager.py`, `swarm_tools.py`): replaces Antigravity's compiled Go backend.
-  * **Agent Prompts** (`polytoken_swarm/agent_definitions/*.md`): standalone role prompts.
-  * **Harness Glue** (`polytoken_swarm/harness_adapter.py`, `worker_runner.py`, `workspace_manager.py`, `stall_monitor.py`).
+  * **Tool Schemas** (`pt_swarm/tool_schemas/*.json`): formalized from internal RPC definitions.
+  * **Board & Tool Engine** (`pt_swarm/board_manager.py`, `swarm_tools.py`): replaces Antigravity's compiled Go backend.
+  * **Agent Prompts** (`pt_swarm/agent_definitions/*.md`): standalone role prompts.
+  * **Harness Glue** (`pt_swarm/harness_adapter.py`, `worker_runner.py`, `workspace_manager.py`, `stall_monitor.py`).
 
 ---
 
@@ -107,7 +107,7 @@ All agents in a workspace share **one** MCP server entry, so every tool call acc
 ## Quickstart Integration Example (Python)
 
 ```python
-from polytoken_swarm.harness_adapter import PolytokenSwarmAdapter
+from pt_swarm.harness_adapter import PolytokenSwarmAdapter
 
 # 1. Initialize the adapter with your workspace path
 adapter = PolytokenSwarmAdapter(workspace_path="./my_project", swarm_id="swarm_01")
@@ -127,8 +127,8 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
 
 ### Option A: Single Project (Workspace-Local)
 
-1. **In this repository**: Polytoken auto-discovers `.polytoken/config.yaml`, `.polytoken/subagents/`, and `.polytoken/skills/` out of the box. The server runs as `python3 -m polytoken_swarm.mcp_server`.
-2. **In another project**: Install the package (`pip install /path/to/polytoken-swarm`) and copy this repository's `.polytoken/` into that project's root, updating `command`/`args` in `.polytoken/config.yaml` to `polytoken-swarm-mcp` (or keep `python3 -m polytoken_swarm.mcp_server` with the package installed).
+1. **In this repository**: Polytoken auto-discovers `.polytoken/config.yaml`, `.polytoken/subagents/`, and `.polytoken/skills/` out of the box. The server runs as `python3 -m pt_swarm.mcp_server`.
+2. **In another project**: Install the package (`pip install /path/to/pt-swarm`) and copy this repository's `.polytoken/` into that project's root, updating `command`/`args` in `.polytoken/config.yaml` to `pt-swarm-mcp` (or keep `python3 -m pt_swarm.mcp_server` with the package installed).
 
 ### Option B: Global Installation (Available in Any Project)
 
@@ -141,14 +141,14 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
    # `--user` keeps the install in ~/.local and leaves the interpreter's own
    # site-packages untouched. Isolated alternative: `pipx install .`.
    ```
-   This registers `polytoken-swarm-mcp` (`polytoken_swarm.mcp_server:main`) and `polytoken-swarm-cli` (`polytoken_swarm.cli:main`) on your `PATH`, and installs the role prompts, tool schemas, and example config inside the package.
+   This registers `pt-swarm-mcp` (`pt_swarm.mcp_server:main`) and `pt-swarm-cli` (`pt_swarm.cli:main`) on your `PATH`, and installs the role prompts, tool schemas, and example config inside the package.
 
 2. **Add the MCP server to your global Polytoken config** (`~/.config/polytoken/config.yaml`):
    ```yaml
    mcp_servers:
      swarm:
        transport: stdio
-       command: polytoken-swarm-mcp
+       command: pt-swarm-mcp
        env:
          POLYTOKEN_SWARM_DIR: "./.swarm/default"
          POLYTOKEN_AGENT_NAME: "coordinator"
@@ -170,10 +170,10 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
 5. **Install the Web UI globally** (optional):
    ```bash
    npm pack
-   npm install -g --prefix ~/.local ./polytoken-swarm-1.0.0.tgz
-   rm -f polytoken-swarm-1.0.0.tgz
+   npm install -g --prefix ~/.local ./pt-swarm-1.0.0.tgz
+   rm -f pt-swarm-1.0.0.tgz
    # run it with:
-   POLYTOKEN_SWARM_DIR=./.swarm/default polytoken-swarm-ui
+   POLYTOKEN_SWARM_DIR=./.swarm/default pt-swarm-ui
    ```
    The dashboard binds `127.0.0.1:5388` by default; override with `HOST` and `PORT`.
 
@@ -190,8 +190,8 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
 
 7. **Uninstall**:
    ```bash
-   pip uninstall polytoken-swarm
-   npm uninstall -g --prefix ~/.local polytoken-swarm
+   pip uninstall pt-swarm
+   npm uninstall -g --prefix ~/.local pt-swarm
    rm -rf ~/.config/polytoken/skills/{native_swarm,swarm_monitor,swarm_narrator}
    rm -f ~/.config/polytoken/subagents/swarm-{coordinator,monitor,narrator,worker}.md
    # finally, remove the `mcp_servers.swarm` block from the global config
@@ -204,10 +204,10 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
 ```bash
 # Start the MCP stdio server (configured automatically by .polytoken/config.yaml)
 POLYTOKEN_SWARM_DIR=./.swarm/default POLYTOKEN_AGENT_NAME=coordinator \
-  python3 -m polytoken_swarm.mcp_server
+  python3 -m pt_swarm.mcp_server
 
 # Watch the board in a terminal
-python3 -m polytoken_swarm.cli --swarm-dir ./.swarm/default --watch
+python3 -m pt_swarm.cli --swarm-dir ./.swarm/default --watch
 
 # Launch the live web dashboard (http://127.0.0.1:5388/)
 POLYTOKEN_SWARM_DIR=./.swarm/default node sidecar_ui/main.mjs

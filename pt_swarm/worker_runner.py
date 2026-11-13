@@ -1,5 +1,5 @@
 """
-Worker Process Supervisor for Polytoken Swarm.
+Worker Process Supervisor for pt-swarm.
 
 Spawns, tracks, wakes, and terminates background worker processes (or in-process
 threads) when `swarm(action="add")` or an `@mention` targets a worker.
