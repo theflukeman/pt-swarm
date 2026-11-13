@@ -231,7 +231,7 @@ class TestPolytokenSwarmAdapter(unittest.TestCase):
         )
 
         # Add a worker without running a subprocess, then mention it from coordinator
-        adapter.board_manager.add_member("parser", role="worker")
+        adapter.board_manager.add_member("parser", role="worker", phase="RUNNING")
         adapter.board_manager.post_message(agent="coordinator", text="@parser please check")
         self.assertEqual(len(woken), 1)
         self.assertEqual(woken[0]["name"], "parser")
@@ -242,6 +242,7 @@ class TestPolytokenSwarmAdapter(unittest.TestCase):
         cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
         adapter.worker_runner.worker_cmd_template = cmd
         adapter.worker_runner.in_process_spawner = None
+        adapter.board_manager.add_member("subw", role="worker", phase="RUNNING")
         res = adapter.worker_runner.spawn_or_wake("subw", "run", brief_seq=2)
         self.assertTrue(res["spawned"])
         self.assertTrue(adapter.worker_runner.is_running("subw"))

@@ -177,6 +177,66 @@ class ProtocolTests(unittest.TestCase):
         process.stdout.close()
         process.stderr.close()
 
+    def test_cancelled_wait_releases_slot_for_next_request(self):
+        entered = threading.Event()
+
+        class PendingBoardManager:
+            def wait_for_event(self, stop_event=None, **kwargs):
+                entered.set()
+                deadline = time.monotonic() + 2
+                while not stop_event.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                return {"woken": False, "head": 0, "matching_seqs": []}
+
+        handlers = SwarmToolHandlers(PendingBoardManager())
+        executor = mcp_server.ThreadPoolExecutor(max_workers=1)
+        slots = threading.BoundedSemaphore(1)
+        cancellations = {}
+        cancellation_lock = threading.Lock()
+        request = {
+            "jsonrpc": "2.0", "id": "first", "method": "tools/call",
+            "params": {"name": "swarm_wait", "arguments": {"since": 0}},
+        }
+        try:
+            mcp_server.handle_rpc_request(
+                handlers, request, wait_executor=executor, wait_slots=slots,
+                wait_cancellations=cancellations, cancellation_lock=cancellation_lock,
+            )
+            self.assertTrue(entered.wait(1))
+            mcp_server.handle_rpc_request(handlers, {
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": {"requestId": "first"},
+            }, wait_cancellations=cancellations, cancellation_lock=cancellation_lock)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                with cancellation_lock:
+                    if "first" not in cancellations and slots.acquire(blocking=False):
+                        slots.release()
+                        break
+                time.sleep(0.01)
+            else:
+                self.fail("cancelled wait did not release its registration and slot")
+            next_request = dict(request, id="second")
+            mcp_server.handle_rpc_request(
+                handlers, next_request, wait_executor=executor, wait_slots=slots,
+                wait_cancellations=cancellations, cancellation_lock=cancellation_lock,
+            )
+            self.assertTrue(entered.wait(1))
+            mcp_server.handle_rpc_request(handlers, {
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": {"requestId": "second"},
+            }, wait_cancellations=cancellations, cancellation_lock=cancellation_lock)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and not any(
+                response.get("id") == "second" for response in self.responses()
+            ):
+                time.sleep(0.01)
+            responses = self.responses()
+            self.assertTrue(any(response.get("id") == "second" and "result" in response for response in responses), responses)
+            self.assertFalse(any(response.get("id") == "second" and "error" in response for response in responses))
+        finally:
+            executor.shutdown(wait=True)
+
     def test_wait_admission_is_bounded_and_ping_post_stay_responsive(self):
         limit = mcp_server.MAX_OUTSTANDING_WAITS
         entered = threading.Event()

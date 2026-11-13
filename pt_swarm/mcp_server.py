@@ -367,6 +367,8 @@ def handle_rpc_request(
     wait_executor=None,
     wait_slots=None,
     wait_stop_event=None,
+    wait_cancellations=None,
+    cancellation_lock=None,
 ) -> None:
     if not isinstance(req, dict) or req.get("jsonrpc") != "2.0" or not isinstance(req.get("method"), str):
         req_id = req.get("id", _NO_ID) if isinstance(req, dict) else _NO_ID
@@ -388,7 +390,15 @@ def handle_rpc_request(
                 "capabilities": {"tools": {}},
             },
         )
-    elif method in ("notifications/initialized", "notifications/cancelled"):
+    elif method == "notifications/initialized":
+        return
+    elif method == "notifications/cancelled":
+        request_id = params.get("requestId")
+        if wait_cancellations is not None and cancellation_lock is not None:
+            with cancellation_lock:
+                cancellation = wait_cancellations.get(request_id)
+                if cancellation is not None:
+                    cancellation.set()
         return
     elif method == "ping":
         send_response(req_id, {})
@@ -408,9 +418,16 @@ def handle_rpc_request(
                 send_response(req_id, error={"code": -32000, "message": "Too many outstanding swarm_wait requests"})
                 return
 
+            request_stop_event = threading.Event()
+            if wait_cancellations is not None and cancellation_lock is not None and req_id is not _NO_ID:
+                with cancellation_lock:
+                    wait_cancellations[req_id] = request_stop_event
+
             def run_wait():
                 try:
-                    result = _handle_swarm_wait(handlers, args, stop_event=wait_stop_event)
+                    result = _handle_swarm_wait(
+                        handlers, args, stop_event=request_stop_event
+                    )
                     send_response(
                         req_id,
                         {"content": [{"type": "text", "text": result}], "isError": False},
@@ -421,12 +438,20 @@ def handle_rpc_request(
                         {"content": [{"type": "text", "text": "Tool execution failed"}], "isError": True},
                     )
                 finally:
+                    if wait_cancellations is not None and cancellation_lock is not None and req_id is not _NO_ID:
+                        with cancellation_lock:
+                            if wait_cancellations.get(req_id) is request_stop_event:
+                                wait_cancellations.pop(req_id, None)
                     if wait_slots is not None:
                         wait_slots.release()
 
             try:
                 wait_executor.submit(run_wait)
             except RuntimeError:
+                if wait_cancellations is not None and cancellation_lock is not None and req_id is not _NO_ID:
+                    with cancellation_lock:
+                        if wait_cancellations.get(req_id) is request_stop_event:
+                            wait_cancellations.pop(req_id, None)
                 if wait_slots is not None:
                     wait_slots.release()
                 send_response(req_id, error={"code": -32000, "message": "Server is shutting down"})
@@ -474,6 +499,8 @@ def main():
     handlers = create_runtime()
     wait_stop_event = threading.Event()
     wait_slots = threading.BoundedSemaphore(MAX_OUTSTANDING_WAITS)
+    wait_cancellations = {}
+    cancellation_lock = threading.Lock()
     wait_executor = ThreadPoolExecutor(
         max_workers=MAX_OUTSTANDING_WAITS, thread_name_prefix="swarm-wait"
     )
@@ -493,9 +520,14 @@ def main():
                 wait_executor=wait_executor,
                 wait_slots=wait_slots,
                 wait_stop_event=wait_stop_event,
+                wait_cancellations=wait_cancellations,
+                cancellation_lock=cancellation_lock,
             )
     finally:
         wait_stop_event.set()
+        with cancellation_lock:
+            for cancellation in wait_cancellations.values():
+                cancellation.set()
         wait_executor.shutdown(wait=True, cancel_futures=True)
 
 
