@@ -476,7 +476,7 @@
     const team = s.members.filter((m) => !isRoleWorker(m));
     const visibleTeam = team.filter((m) => !m.killed);
     $('swarm-title').textContent = s.title || 'Untitled swarm';
-    $('swarm-title').title = `${s.title || 'Untitled swarm'}\nswarm ${s.id}\n${s.dir || ''}`;
+    $('swarm-title').title = `${s.title || 'Untitled swarm'}\nswarm ${s.id}`;
     const meta = $('swarm-meta');
     const current = s.members.find((m) => m.name === state.me);
     const status = current ? `${current.name} · ${statusLabel(current.status)}` : `${visibleTeam.length} ${plural(visibleTeam.length, 'member')}`;
@@ -1076,8 +1076,8 @@
     const text = s.raw?.[state.rawKind] ?? '';
     const file = { members: 'members.json', board: 'board.jsonl', view: 'view.json' }[state.rawKind] || '';
     const lines = text ? text.split('\n').filter(Boolean).length : 0;
-    const dir = state.rawKind === 'view' ? s.view?.dir || s.dir : s.dir;
-    const path = dir ? `${dir}/${file}` : file;
+    // The response carries no absolute path, so the Raw tab names the file.
+    const path = file;
     // The path ellipsizes from the left (dir=rtl) so the file name stays visible.
     $('raw-meta').innerHTML = `<span class="path" title="${esc(path)}"><span dir="ltr">${esc(path)}</span></span>` +
         `<span class="size">· ${esc(fmtBytes(text.length))}${state.rawKind === 'board' ? ` · ${plural(lines, 'line')}` : ''}</span>`;
