@@ -13,6 +13,7 @@
  * Nothing here writes a file or messages an agent.
  */
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { accessSync, constants as fsConstants, existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, sep } from 'node:path';
@@ -665,7 +666,7 @@ function readView(appData, id, dir, narrator) {
   if (hf.tooLarge) htmlError = 'too_large';
   else if (hf.size >= 0 && !hf.text?.trim()) htmlError = 'empty';
   return {
-    etag: `${vdir}|${jf.mtime}:${jf.size}|${hf.mtime}:${hf.size}`,
+    etag: `${createHash('sha256').update(vdir).digest('hex')}|${jf.mtime}:${jf.size}|${hf.mtime}:${hf.size}`,
     view: {
       // Whether the narrator has written anything (view.json or view.html).
       // Without either, the UI shows no Overview at all.

@@ -100,6 +100,8 @@ test('sidecar_ui resolves directSwarmDir only for its members and accepts coordi
     assert.equal(r1.dir, undefined);
     assert.equal(r1.appData, undefined);
     assert.equal(r1.view.dir, undefined);
+    // ETags are public too: the response must not disclose its backing directory.
+    assert.equal(JSON.stringify(r1).includes(root), false);
 
     // The Raw tab's file contents are opt-in (?raw=1); a normal poll carries
     // the board once, not twice.
@@ -139,6 +141,9 @@ test('standalone HTTP shim rejects hostile Host and cross-origin requests', asyn
     assert.equal(await getStatus({ Host: `127.0.0.1:${port}`, Origin: 'https://evil.example' }), 403);
     const local = await fetch(`http://127.0.0.1:${port}/private`);
     assert.equal(local.status, 200);
+    const missingStatic = await fetch(`http://127.0.0.1:${port}/missing-static.js`);
+    assert.equal(missingStatic.status, 404);
+    assert.equal(await missingStatic.text(), 'Not found');
   } finally {
     server.close();
   }
@@ -184,6 +189,15 @@ test('channels.mjs parses mentions, channel mentions, and member visibility', as
   assert.deepEqual(flip, [{ name: 'flip', topic: 'v2', created_by: 'coordinator', archived: false }]);
   const active = activeAt(flip, windows);
   assert.deepEqual(windows.map((_, i) => active[i]('flip')), [true, true, false, false, true]);
+  const beforeFirstCreate = [
+    { seq: 0, agent: 'api', text: 'before creation' },
+    { seq: 1, agent: 'coordinator', control: { op: 'create', channel: 'again' } },
+    { seq: 2, agent: 'coordinator', control: { op: 'archive', channel: 'again' } },
+    { seq: 3, agent: 'coordinator', control: { op: 'create', channel: 'again' } },
+  ];
+  const currentRegistry = channelRegistry(beforeFirstCreate);
+  const beforeActive = activeAt(currentRegistry, beforeFirstCreate);
+  assert.deepEqual(beforeFirstCreate.map((_, i) => beforeActive[i]('again')), [false, true, false, true]);
   // Archive at #3 counts from its own message; a channel archived at the head
   // (never re-created) is active only before it.
   const archivedOnly = channelRegistry(windows.slice(0, 3));

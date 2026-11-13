@@ -175,12 +175,16 @@ export function activeAt(registry, msgs) {
       if (!ch) return false;
       // The state in force at this message: a control counts from its own seq
       // (a create shows the channel, an archive hides it, on that message).
-      let state = null; // null: no control in view, so the head state applies
-      for (const e of controls.get(c) || []) {
+      const history = controls.get(c) || [];
+      // Before the first observed control, use the opposite of that control's
+      // resulting state. Only channels with no historical controls use the
+      // current registry as a fallback.
+      let state = history.length ? !history[0].archived : ch.archived;
+      for (const e of history) {
         if (e.seq > seq) break;
         state = e.archived;
       }
-      return state === null ? !ch.archived : !state;
+      return !state;
     };
   });
 }
