@@ -7,6 +7,8 @@ Compatible with Polytoken's `mcp_servers` configuration.
 import json
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict
 
@@ -204,6 +206,7 @@ TOOLS = [
 
 
 _NO_ID = object()
+_RESPONSE_LOCK = threading.Lock()
 
 
 def send_response(req_id: Any, result: Any = None, error: Any = None):
@@ -214,8 +217,9 @@ def send_response(req_id: Any, result: Any = None, error: Any = None):
         resp["error"] = error
     else:
         resp["result"] = result
-    sys.stdout.write(json.dumps(resp) + "\n")
-    sys.stdout.flush()
+    with _RESPONSE_LOCK:
+        sys.stdout.write(json.dumps(resp) + "\n")
+        sys.stdout.flush()
 
 
 def create_runtime() -> SwarmToolHandlers:
@@ -264,7 +268,71 @@ def negotiate_protocol_version(requested: Any) -> str:
     return SUPPORTED_PROTOCOL_VERSIONS[0]
 
 
-def handle_rpc_request(handlers: SwarmToolHandlers, req: Any) -> None:
+def _validate_tool_arguments(tool_name: Any, args: Dict[str, Any]) -> bool:
+    tool = next((item for item in TOOLS if item["name"] == tool_name), None)
+    if tool is None:
+        return True
+    schema = tool["inputSchema"]
+    if set(args) - set(schema["properties"]):
+        return False
+    if any(key not in args for key in schema.get("required", [])):
+        return False
+    for key, value in args.items():
+        prop = schema["properties"][key]
+        expected = prop.get("type")
+        if expected == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
+            return False
+        if expected == "string" and not isinstance(value, str):
+            return False
+        if expected == "boolean" and not isinstance(value, bool):
+            return False
+        if expected == "array":
+            item_type = prop.get("items", {}).get("type")
+            if not isinstance(value, list):
+                return False
+            if item_type == "string" and any(not isinstance(item, str) for item in value):
+                return False
+            if item_type == "integer" and any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+                return False
+        if "enum" in prop and value not in prop["enum"]:
+            return False
+        if "minimum" in prop and isinstance(value, int) and value < prop["minimum"]:
+            return False
+    if tool_name == "swarm":
+        action = args.get("action")
+        action_fields = {
+            "add": {"name", "brief", "mode", "model", "workspace", "fork", "n", "tasks", "channels"},
+            "bind": {"name", "job_id", "state"},
+            "model": {"name", "model"},
+            "kill": {"name"},
+            "title": {"title"},
+            "channel": {"name", "channel", "op", "topic"},
+            "models": {"all"},
+            "status": set(),
+        }
+        if action not in action_fields or (set(args) - {"action", "caller"}) - action_fields[action]:
+            return False
+        if action == "title" and (not isinstance(args.get("title"), str) or "title" not in args):
+            return False
+        if action == "model" and (not isinstance(args.get("model"), str) or "model" not in args):
+            return False
+        if action == "add" and "tasks" in args and not isinstance(args["tasks"], list):
+            return False
+        if action == "add" and "n" in args and (args["n"] < 1 or args["n"] > 100):
+            return False
+        if action == "add" and "tasks" in args and len(args["tasks"]) > 100:
+            return False
+        if action == "add" and "tasks" in args and "n" in args and args["n"] != len(args["tasks"]):
+            return False
+    if tool_name == "swarm_wait":
+        if args["since"] < 0 or args.get("timeout_seconds", 300) < 0:
+            return False
+    if tool_name == "read_board" and args.get("since", 0) < 0:
+        return False
+    return True
+
+
+def handle_rpc_request(handlers: SwarmToolHandlers, req: Any, wait_executor=None) -> None:
     if not isinstance(req, dict) or req.get("jsonrpc") != "2.0" or not isinstance(req.get("method"), str):
         req_id = req.get("id", _NO_ID) if isinstance(req, dict) else _NO_ID
         send_response(req_id if req_id is not _NO_ID else None, error={"code": -32600, "message": "Invalid Request"})
@@ -297,9 +365,11 @@ def handle_rpc_request(handlers: SwarmToolHandlers, req: Any) -> None:
         if not isinstance(args, dict):
             send_response(req_id, error={"code": -32602, "message": "Invalid params"})
             return
-        known = {"swarm": set(TOOLS[0]["inputSchema"]["properties"]), "post_message": {"text", "channel", "caller"}, "read_board": {"since", "limit", "seqs", "channel", "status", "caller"}, "swarm_wait": {"since", "mentions_only", "timeout_seconds", "caller"}}
-        if tool_name in known and set(args) - known[tool_name]:
+        if not _validate_tool_arguments(tool_name, args):
             send_response(req_id, error={"code": -32602, "message": "Invalid params"})
+            return
+        if tool_name == "swarm_wait" and wait_executor is not None:
+            wait_executor.submit(handle_rpc_request, handlers, req)
             return
 
         try:
@@ -342,16 +412,17 @@ def handle_rpc_request(handlers: SwarmToolHandlers, req: Any) -> None:
 
 def main():
     handlers = create_runtime()
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except Exception:
-            send_response(None, error={"code": -32700, "message": "Parse error"})
-            continue
-        handle_rpc_request(handlers, req)
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="swarm-wait") as wait_executor:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                req = json.loads(line)
+            except Exception:
+                send_response(None, error={"code": -32700, "message": "Parse error"})
+                continue
+            handle_rpc_request(handlers, req, wait_executor=wait_executor)
 
 
 if __name__ == "__main__":

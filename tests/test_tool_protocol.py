@@ -1,6 +1,7 @@
 """Regression tests for MCP request handling and tool-boundary validation."""
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -103,6 +104,54 @@ class ProtocolTests(unittest.TestCase):
     def test_tool_schemas_forbid_unknown_properties(self):
         for tool in mcp_server.TOOLS:
             self.assertFalse(tool["inputSchema"].get("additionalProperties", True))
+
+    def test_wait_does_not_block_ping_or_post_and_responses_are_serialized(self):
+        posted = threading.Event()
+
+        class PendingWaitHandlers:
+            def handle_swarm_wait(self, **kwargs):
+                self.assert_wait_args = kwargs
+                if not posted.wait(2):
+                    raise AssertionError("post_message was blocked behind swarm_wait")
+                return "woken"
+
+            def handle_post_message(self, **kwargs):
+                posted.set()
+                return {"status": "posted", "seq": 1}
+
+        handlers = PendingWaitHandlers()
+        requests = [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "swarm_wait", "arguments": {"since": 0, "timeout_seconds": 2}}}),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}),
+            json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "post_message", "arguments": {"text": "wake"}}}),
+        ]
+        with patch("pt_swarm.mcp_server.create_runtime", return_value=handlers):
+            with patch("pt_swarm.mcp_server.sys.stdin", [line + "\n" for line in requests]):
+                mcp_server.main()
+        responses = self.responses()
+        self.assertEqual({response["id"] for response in responses}, {1, 2, 3})
+        self.assertTrue(posted.is_set())
+        self.assertEqual(len({response["id"] for response in responses}), len(responses))
+
+    def test_invalid_tool_boundary_values_return_sanitized_invalid_params(self):
+        cases = [
+            ("swarm", {"action": "title", "title": None}),
+            ("swarm", {"action": "add", "name": "grp", "tasks": "not-a-list"}),
+            ("swarm", {"action": "add", "name": "grp", "tasks": [], "n": 2}),
+            ("swarm_wait", {"since": -1}),
+            ("read_board", {"since": -1}),
+            ("swarm", {"action": "models", "name": "ignored"}),
+            ("swarm", {"action": "invalid"}),
+        ]
+        for tool_name, arguments in cases:
+            with self.subTest(tool=tool_name, arguments=arguments):
+                mcp_server.handle_rpc_request(self.handlers, {
+                    "jsonrpc": "2.0", "id": 17, "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments},
+                })
+                response = self.responses()[-1]
+                self.assertEqual(response.get("error", {}).get("code"), -32602)
+                self.assertEqual(response["error"]["message"], "Invalid params")
 
 
 if __name__ == "__main__":
