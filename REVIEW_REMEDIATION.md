@@ -2,7 +2,7 @@
 
 This ledger records the disposition of every ID listed in `REVIEW_FINDINGS.md` against the current tree. “Fixed” means the current implementation was changed for the reported mechanism; test evidence below is the named regression test where directly identified, or the parent-reported suite verification where the finding-specific test is not independently identified. It is not a claim that every possible edge case is exhausted. “Documented disposition” means the behavior is an intentional limitation/contract rather than a repaired mechanism. “Unproven” means evidence is insufficient to claim a fix or a failure.
 
-The parent reported verification of `PYTHONPATH=/tmp/pt-swarm-build-env python3 -m unittest discover -s tests -v` and `node --test tests/*.mjs`; test counts are intentionally omitted pending the final updated counts. This ledger did not independently rerun those commands.
+Final coordinator verification: `PYTHONPATH=/tmp/pt-swarm-build-env python3 -m unittest discover -s tests -v` — **147 passed**, including the fresh source-distribution build/inspection; `node --test tests/*.mjs` — **12 passed**. The temporary Python path supplies the installed setuptools build requirement; ordinary test runs need that documented build requirement installed. `git diff --check` passed and the working tree was clean before this verification note. The final fixes also prevent mentions from externally spawning delegated/bound workers and release wait capacity after client cancellation. Terra reviews were source inspections, not independent test executions.
 
 | ID | Outcome | Change / evidence or limitation |
 |---|---|---|
