@@ -19,8 +19,10 @@ import re
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-# Passed to stdio children already, so declaring them again says nothing new.
+# Passed to stdio children by default; declaring `pass_env` *replaces* that set, so a
+# block has to carry them or the child loses PATH (and with it, `polytoken` itself).
 DEFAULT_PASSED = {"HOME", "PATH", "LANG", "TMPDIR", "PWD"}
+DEFAULT_ORDER = ["HOME", "PATH", "LANG", "TMPDIR"]
 
 ENV_REF_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
 
@@ -54,11 +56,15 @@ def referenced_env_names(paths: Optional[Sequence] = None) -> List[str]:
 
 
 def pass_env_block(names: Sequence[str], indent: int = 4) -> str:
-    """The YAML to paste under ``mcp_servers.<name>`` in a polytoken config."""
-    if not names:
-        return ""
+    """The YAML to paste under ``mcp_servers.<name>`` in a polytoken config.
+
+    A declared ``pass_env`` list *replaces* the default set rather than extending it,
+    so the defaults come first: without ``PATH`` the child cannot find ``polytoken`` at
+    all, and without ``HOME`` it cannot read the config that names the credentials.
+    """
+    ordered = DEFAULT_ORDER + [n for n in names if n not in DEFAULT_PASSED]
     pad = " " * indent
-    items = "".join(f"{pad}  - {name}\n" for name in names)
+    items = "".join(f"{pad}  - {name}\n" for name in ordered)
     return f"{pad}pass_env:\n{items}"
 
 
@@ -82,9 +88,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.names:
         if names:
             print("\n".join(names))
-        return 0
-    if not names:
-        print("# no env-var references found in the polytoken config")
         return 0
     print(pass_env_block(names), end="")
     return 0

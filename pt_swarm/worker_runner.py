@@ -225,7 +225,11 @@ class WorkerProcessManager:
                     "mode": "unconfigured",
                     "name": name,
                     "workspace": str(work_dir),
-                    "note": "Set POLYTOKEN_WORKER_CMD or POLYTOKEN_BIN to auto-launch CLI worker processes.",
+                    "note": (
+                        "Set POLYTOKEN_WORKER_CMD or POLYTOKEN_BIN to auto-launch CLI worker "
+                        "processes, or make sure `polytoken` is on this server's PATH -- a "
+                        "declared `pass_env:` replaces the default HOME/PATH/LANG/TMPDIR set."
+                    ),
                 }
 
             env = os.environ.copy()

@@ -22,9 +22,16 @@ mcp_servers:
     # Polytoken's global config references provider credentials by name, while MCP
     # stdio children start with a cleared environment. A child whose `polytoken`
     # cannot load that config fails every worker spawn with `config load failed`.
-    # Declare the names YOUR install needs -- this prints the block to paste here:
+    #
+    # Declaring pass_env REPLACES the default HOME/PATH/LANG/TMPDIR set, so the block
+    # must repeat those four (without PATH the child cannot find `polytoken` itself).
+    # This prints the whole block for YOUR install:
     #
     #   python3 -m pt_swarm.env_vars
     #
     # pass_env:
+    #   - HOME
+    #   - PATH
+    #   - LANG
+    #   - TMPDIR
     #   - YOUR_PROVIDER_API_KEY

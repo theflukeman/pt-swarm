@@ -13,9 +13,14 @@ from .board_manager import BoardManager, MAIN_CHANNEL
 from .model_selection import FULL_SELECTOR, MINI_SELECTOR, NANO_SELECTOR
 
 
+def _polytoken_binary() -> Optional[str]:
+    """The `polytoken` CLI this server can run, or None when it is not on PATH."""
+    return os.environ.get("POLYTOKEN_BIN") or shutil.which("polytoken")
+
+
 def _list_polytoken_models() -> List[Dict[str, Any]]:
     """Ask the Polytoken CLI which models this install can actually run."""
-    exe = os.environ.get("POLYTOKEN_BIN") or shutil.which("polytoken")
+    exe = _polytoken_binary()
     if not exe:
         return []
     try:
@@ -142,10 +147,19 @@ class SwarmToolHandlers:
                 ),
             }
             if not discovered:
-                res["note"] = (
-                    "Could not read the model list from `polytoken models`; "
-                    "use action=model to set a model by name."
-                )
+                if _polytoken_binary() is None:
+                    res["note"] = (
+                        "`polytoken` is not on this server's PATH, so the model list is "
+                        "unavailable. MCP children start with a cleared environment, and a "
+                        "declared `pass_env:` replaces the default HOME/PATH/LANG/TMPDIR set: "
+                        "include PATH (`python3 -m pt_swarm.env_vars` prints the block) or set "
+                        "POLYTOKEN_BIN."
+                    )
+                else:
+                    res["note"] = (
+                        "Could not read the model list from `polytoken models`; "
+                        "use action=model to set a model by name."
+                    )
             return res
 
         elif action == "add":

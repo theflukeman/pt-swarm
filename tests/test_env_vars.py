@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from pt_swarm import env_vars
+from pt_swarm.board_manager import BoardManager
+from pt_swarm.swarm_tools import SwarmToolHandlers
 from pt_swarm.worker_runner import WorkerProcessManager
 
 CONFIG_TEXT = """
@@ -66,10 +68,24 @@ class ReferencedEnvNamesTests(unittest.TestCase):
 class PassEnvBlockTests(unittest.TestCase):
     def test_block_is_ready_to_paste(self):
         block = env_vars.pass_env_block(["A_KEY", "B_KEY"])
-        self.assertEqual(block, "    pass_env:\n      - A_KEY\n      - B_KEY\n")
+        self.assertEqual(
+            block,
+            "    pass_env:\n      - HOME\n      - PATH\n      - LANG\n      - TMPDIR\n"
+            "      - A_KEY\n      - B_KEY\n",
+        )
 
-    def test_empty_block_is_empty(self):
-        self.assertEqual(env_vars.pass_env_block([]), "")
+    def test_block_keeps_the_defaults_a_pass_env_would_replace(self):
+        # Declaring pass_env replaces the default set, so PATH must be in the block
+        # or the child cannot find `polytoken` at all.
+        with TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.yaml"
+            cfg.write_text(CONFIG_TEXT, encoding="utf-8")
+            block = env_vars.pass_env_block(env_vars.referenced_env_names([cfg]))
+        for name in ("HOME", "PATH", "LANG", "TMPDIR", "SOME_PROVIDER_API_KEY"):
+            self.assertIn(name, block)
+
+    def test_empty_names_still_produce_the_defaults(self):
+        self.assertIn("PATH", env_vars.pass_env_block([]))
 
     def test_cli_prints_the_block(self):
         with TemporaryDirectory() as tmp:
@@ -114,6 +130,37 @@ class SpawnHintTests(unittest.TestCase):
             self.assertFalse(res["spawned"])
             self.assertIn("pass_env", res["hint"])
             self.assertIn("SOME_PROVIDER_API_KEY", res["hint"])
+
+
+class SpawnDiagnosticsTests(unittest.TestCase):
+    def test_models_note_blames_path_when_polytoken_is_missing(self):
+        with TemporaryDirectory() as tmp:
+            bm = BoardManager(Path(tmp) / "swarm")
+            handlers = SwarmToolHandlers(bm)
+            env = {k: v for k, v in os.environ.items() if k != "POLYTOKEN_BIN"}
+            with patch.dict(os.environ, env, clear=True):
+                with patch("pt_swarm.swarm_tools.shutil.which", return_value=None):
+                    res = handlers.handle_swarm(action="models")
+        self.assertEqual([m["name"] for m in res["models"]], ["default"])
+        self.assertIn("PATH", res["note"])
+        self.assertIn("pass_env", res["note"])
+
+    def test_unconfigured_spawn_note_mentions_path(self):
+        with TemporaryDirectory() as tmp:
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("POLYTOKEN_BIN", "POLYTOKEN_WORKER_CMD")
+            }
+            with patch.dict(os.environ, env, clear=True):
+                with patch("pt_swarm.worker_runner.shutil.which", return_value=None):
+                    mgr = WorkerProcessManager(
+                        swarm_dir=Path(tmp) / "swarm", workspace_root=Path(tmp)
+                    )
+                    self.assertIsNone(mgr.worker_cmd_template)
+                    res = mgr.spawn_or_wake(name="nopath", prompt_text="work")
+            self.assertEqual(res["mode"], "unconfigured")
+            self.assertIn("PATH", res["note"])
 
 
 if __name__ == "__main__":

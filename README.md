@@ -197,9 +197,14 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
          POLYTOKEN_SWARM_DIR: "./.swarm/default"
          POLYTOKEN_AGENT_NAME: "coordinator"
        # The env vars your polytoken config references (provider keys and the
-       # like) -- stdio children start with a cleared environment. See step 3
-       # for the block to paste here.
+       # like) -- stdio children start with a cleared environment, and a declared
+       # pass_env REPLACES the default HOME/PATH/LANG/TMPDIR set. See step 3 for
+       # the block to paste here.
        # pass_env:
+       #   - HOME
+       #   - PATH
+       #   - LANG
+       #   - TMPDIR
        #   - YOUR_PROVIDER_API_KEY
    ```
    Polytoken launches stdio MCP servers with the **project directory as the working directory**, so `./.swarm/default` isolates each workspace's board to that project.
@@ -213,7 +218,7 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
    python3 -m pt_swarm.env_vars          # paste-ready pass_env block for your machine
    python3 -m pt_swarm.env_vars --names  # just the names
    ```
-   It reads the config files Polytoken would read (`$POLYTOKEN_CONFIG`, then `$XDG_CONFIG_HOME/polytoken/config.yaml`, then `./.polytoken/config.yaml`) and prints every `$VAR`/`${VAR}` they reference. A spawn that fails this way reports the exit code, the log tail, and a hint naming the variables it derived.
+   It reads the config files Polytoken would read (`$POLYTOKEN_CONFIG`, then `$XDG_CONFIG_HOME/polytoken/config.yaml`, then `./.polytoken/config.yaml`) and prints every `$VAR`/`${VAR}` they reference. **A declared `pass_env:` replaces the default set rather than extending it**, so the block starts with `HOME`, `PATH`, `LANG`, and `TMPDIR` — dropping `PATH` leaves the child unable to find `polytoken` at all, which shows up as an empty model list and `spawned: false` with `mode: unconfigured`. A spawn that fails this way reports the exit code, the log tail, and a hint naming the variables it derived.
 
 4. **Copy subagents & skills globally** (prefer copying over symlinking so the global setup survives moving or deleting this checkout):
    ```bash
