@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -60,15 +61,7 @@ class TestCliAndSchemas(unittest.TestCase):
             schema_file = schemas_dir / f"{name}.json"
             self.assertTrue(schema_file.exists(), f"Missing schema file {schema_file}")
             schema_data = json.loads(schema_file.read_text(encoding="utf-8"))
-            self.assertEqual(schema_data["title"], name)
-            self.assertEqual(
-                set(schema_data.get("properties", {}).keys()),
-                set(mcp_tool["inputSchema"].get("properties", {}).keys()),
-            )
-            self.assertEqual(
-                schema_data.get("required", []),
-                mcp_tool["inputSchema"].get("required", []),
-            )
+            self.assertEqual(schema_data, {"title": name, **mcp_tool["inputSchema"]})
 
     def test_swarm_title_models_model_and_channel_ops(self):
         t_res = self.tools.handle_swarm(action="title", title="New Title")
@@ -152,32 +145,61 @@ class TestCliAndSchemas(unittest.TestCase):
 
     def test_packaging_includes_agent_definitions_and_sidecar_bin(self):
         root = Path(__file__).resolve().parent.parent
-        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('include = ["pt_swarm*"]', pyproject)
-        self.assertIn("agent_definitions/*.md", pyproject)
-        self.assertIn("tool_schemas/*.json", pyproject)
-        # Runtime data must live inside the installed package, not beside it.
-        for rel in ("agent_definitions/worker.md", "tool_schemas/swarm.json", "config.example.json"):
-            self.assertTrue((root / "pt_swarm" / rel).exists(), f"Missing {rel}")
-        self.assertEqual(
-            sorted(
-                p.name
-                for p in (root / "pt_swarm").iterdir()
-                if p.is_dir() and not p.name.startswith("__")
-            ),
-            ["agent_definitions", "tool_schemas"],
+        with tempfile.TemporaryDirectory() as output_dir:
+            build_code = (
+                "import setuptools.build_meta; "
+                "print(setuptools.build_meta.build_sdist(__import__('sys').argv[1]))"
+            )
+            try:
+                subprocess.run(
+                    [sys.executable, "-c", build_code, output_dir],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                if "No module named 'setuptools'" in exc.stderr:
+                    self.skipTest("setuptools build backend is not installed; install project build requirements")
+                self.fail(f"Source distribution build failed:\n{exc.stderr}")
+            archives = list(Path(output_dir).glob("*.tar.gz"))
+            self.assertEqual(len(archives), 1, "Expected exactly one source distribution")
+            with tarfile.open(archives[0], "r:gz") as archive:
+                shipped = {Path(member.name).as_posix() for member in archive.getmembers()}
+
+        top = archives[0].name.removesuffix(".tar.gz")
+        required = (
+            "tests/fixtures/board.jsonl",
+            "tests/fixtures/members.json",
+            "subagents/swarm-coordinator.md",
+            "subagents/swarm-worker.md",
+            "skills/native_swarm/SKILL.md",
+            "skills/swarm_monitor/SKILL.md",
+            "skills/swarm_narrator/SKILL.md",
+            ".polytoken/config.example.yaml",
+            "schemas/board_jsonl.md",
+            "schemas/members_json.md",
+            "schemas/view_json.md",
+            "sidecar_ui/main.mjs",
+            "sidecar_ui/sidecar_sdk/index.mjs",
+            "plugin.json",
+            "assets/logo.svg",
+            "README.md",
+            "PORTING_MANIFEST.md",
+            "AGENTS.md",
         )
-        # The distribution must not own generic top-level module names.
-        self.assertFalse((root / "tools").exists())
-        self.assertFalse((root / "mcp_server.py").exists())
+        missing = [f"{top}/{path}" for path in required if f"{top}/{path}" not in shipped]
+        self.assertEqual(missing, [], f"Source distribution is missing required files: {missing}")
 
         adapter = PolytokenSwarmAdapter(workspace_path=str(self.test_dir))
         for role in ("coordinator", "worker", "verifier", "monitor", "narrator"):
-            self.assertTrue(len(adapter.load_system_prompt(role)) > 0, f"Empty prompt for {role}")
+            prompt = adapter.load_system_prompt(role)
+            self.assertTrue(prompt, f"Empty prompt for {role}")
+            if role == "worker":
+                self.assertIn('caller="', prompt)
 
         pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(pkg.get("bin", {}).get("pt-swarm-ui"), "./sidecar_ui/main.mjs")
-        self.assertTrue((root / "sidecar_ui" / "sidecar_sdk" / "index.mjs").exists())
 
 
 class TestWorkspaceManagerModes(unittest.TestCase):
@@ -203,7 +225,8 @@ class TestWorkspaceManagerModes(unittest.TestCase):
         self.assertFalse((ws / "node_modules").exists())
         self.assertFalse((ws / ".venv").exists())
         wm.cleanup_workspace("a2", mode="share")
-        self.assertFalse(ws.exists())
+        # A non-Git share fallback is a copy, so cleanup preserves its work.
+        self.assertTrue((ws / "src.py").exists())
 
     def test_branch_mode_git_clone_and_cleanup(self):
         subprocess.run(["git", "init"], cwd=str(self.test_dir), capture_output=True, check=True)

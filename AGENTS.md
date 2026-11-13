@@ -22,7 +22,7 @@ Guidance for AI coding agents working in **pt-swarm**.
 - `sidecar_ui/` — Node.js ES-module web dashboard (`main.mjs`, `channels.mjs`, `app.js`, `hive.js`, `sidecar_sdk/`).
 - `schemas/` — On-disk format specs (`board_jsonl.md`, `members_json.md`, `view_json.md`).
 - `subagents/`, `skills/`, `.polytoken/` — Role prompts, subagent manifests, and Polytoken config.
-- `tests/` — Python `unittest` suites (`test_board.py`, `test_adapter.py`, `test_cli_and_schemas.py`) and Node.js tests (`test_sidecar_ui.mjs`).
+- `tests/` — Python `unittest` suites (discover with `python3 -m unittest discover -s tests -v`) and Node.js tests (`node --test tests/test_sidecar_ui.mjs`).
 
 Do not reintroduce top-level `tools/` or `mcp_server.py` modules: they collide with unrelated packages when installed globally.
 
@@ -36,10 +36,10 @@ Follow **Test-Driven Development (TDD)** for all bug fixes and new features:
 ### Test Commands
 
 ```bash
-# Python suite (35 tests; unittest is used, pytest is not required)
+# Python suite (unittest discovery)
 python3 -m unittest discover -s tests -v
 
-# Node.js sidecar UI & channel logic suite (2 tests)
+# Node.js sidecar UI & channel logic suite
 node --test tests/test_sidecar_ui.mjs
 ```
 
@@ -52,7 +52,7 @@ Use `python3`; some systems have no `python` alias.
 - **Wake Modes**: `wake_mode` values are `"working"`, `"mentions"`, and `"anything"` (matching `sidecar_ui/main.mjs` and `tests/fixtures/members.json`). Always restore `"working"` in a `finally` block when exiting `wait_for_event()`.
 - **Read Cursors**: `post_message()` must not advance `last_read_seq` past unread messages; channel-filtered `read_messages()` must not advance `last_read_seq` to the global `head_seq`.
 - **Board Identity**: All agents share one MCP server entry, distinguished only by the `caller` argument. Worker prompts and `worker_runner` spawn prompts must instruct workers to pass `caller="<name>"`; dropping that instruction silently attributes worker traffic to the coordinator.
-- **Worker Spawning**: The default worker command is `polytoken exec {prompt}` — a bare `polytoken` starts the TUI, which exits immediately without a TTY. `spawn_or_wake()` must verify the child survived `spawn_grace_seconds` and report `spawned: false` with the exit code otherwise.
+- **Worker Spawning**: When `polytoken` is available, the default worker command is `polytoken exec --model {model} {prompt}`; unresolved model and its flag are omitted. A bare `polytoken` starts the TUI, which exits immediately without a TTY. `spawn_or_wake()` must verify the child survived `spawn_grace_seconds` and report `spawned: false` with the exit code otherwise.
 - **PID Tracking**: `<swarm_dir>/pids/<name>.pid` stores JSON `{"pid": N, "start": "<marker>"}`. On Linux the marker comes from `/proc/<pid>/stat` so a recycled PID is not mistaken for a live worker. Plain-integer contents are still accepted for older state.
 - **Cross-Process Workers**: `WorkerProcessManager` tracks PIDs on disk so separate `mcp_server.py` processes do not spawn duplicate workers. Always close `log_fh` in the parent process after `subprocess.Popen`.
 - **Schema Parity**: Keep `pt_swarm/mcp_server.py` (`TOOLS`), `pt_swarm/tool_schemas/*.json`, `pt_swarm/swarm_tools.py`, and `schemas/*.md` in sync (`test_tool_schemas_match_mcp_server_tools` enforces schema/MCP parity).

@@ -19,6 +19,8 @@ pt-swarm/
 ├── PORTING_MANIFEST.md            # Detailed provenance (rebuilt vs adapted breakdown)
 ├── .gitignore
 ├── LICENSE                        # MIT
+├── NOTICE                         # Third-party provenance and terms
+├── MANIFEST.in                    # Source distribution contents
 ├── package.json                   # npm manifest (dashboard binary)
 ├── pyproject.toml                 # Python package & CLI entrypoints
 ├── plugin.json                    # Antigravity/Polytoken plugin descriptor
@@ -35,6 +37,9 @@ pt-swarm/
 │   ├── harness_adapter.py         # Glue between a harness agent loop and the board
 │   ├── cli.py                     # Terminal board & roster viewer
 │   ├── config.example.json
+│   ├── env_vars.py                # Config-derived environment variable helper
+│   ├── model_selection.py         # Model request resolution
+│   ├── model_hook.py              # Session model hook
 │   ├── agent_definitions/         # Role prompts (coordinator, worker, monitor, narrator)
 │   └── tool_schemas/              # JSON Schemas for function calling
 ├── skills/                        # Skill runbooks
@@ -57,6 +62,10 @@ pt-swarm/
     ├── test_board.py
     ├── test_adapter.py
     ├── test_cli_and_schemas.py
+    ├── test_tool_protocol.py
+    ├── test_env_vars.py
+    ├── test_model_selection.py
+    ├── test_worker_review.py
     └── test_sidecar_ui.mjs
 ```
 
@@ -241,7 +250,7 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
    Two packaging details matter: installing from the folder (`npm install -g .`) creates a *symlink* back to this checkout, so the global command breaks if the checkout moves — install the packed tarball for a self-contained copy. And when npm's default prefix is not writable (common with Homebrew or distro Node), pass `--prefix ~/.local`; its `bin/` directory must be on `PATH`.
 
 6. **Worker process spawning**:
-   `WorkerProcessManager` launches workers with `polytoken exec "<prompt>"`, which needs `polytoken` on `PATH` (passed through by default). To use a different command, set `POLYTOKEN_WORKER_CMD` in the MCP server's `env:`, for example:
+   `WorkerProcessManager` launches workers with `polytoken exec "<prompt>"`, which needs `polytoken` on `PATH` (passed through by default). To override the default command (which includes `exec --model {model}`), set `POLYTOKEN_WORKER_CMD` in the MCP server's `env:`, for example:
    ```yaml
    env:
      POLYTOKEN_WORKER_CMD: "polytoken exec {prompt}"
@@ -277,7 +286,7 @@ python3 -m pt_swarm.cli --swarm-dir ./.swarm/default --watch
 # Launch the live web dashboard (http://127.0.0.1:5388/)
 POLYTOKEN_SWARM_DIR=./.swarm/default node sidecar_ui/main.mjs
 
-# Run all tests (35 Python unittest + 2 Node.js tests)
+# Run all tests (Python unittest discovery and Node.js test runner)
 python3 -m unittest discover -s tests -v
 node --test tests/test_sidecar_ui.mjs
 ```

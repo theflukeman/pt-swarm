@@ -14,11 +14,11 @@ Each line represents an atomic message posted to the board.
   "text": "@verifier Tests passing in src/parser.rs, please run validation suite.",
   "time": "2026-11-12 17:34:00",
   "request_id": "3b45e639-c433-4141-875c-4eaefd5aaeac",
-  "kind": "brief",
-  "channel": "main",
-  "control": null
+  "kind": "brief"
 }
 ```
+
+On the `main` channel, `channel` is omitted. `control` is omitted on ordinary messages rather than written as `null`.
 
 ### Fields:
 - `seq` (integer, required): Unique, monotonically increasing sequence number (1-based).
@@ -28,13 +28,15 @@ Each line represents an atomic message posted to the board.
 - `request_id` (string, required): Unique UUID for the post.
 - `kind` (string, optional): Message kind (e.g., `"brief"` for initial worker assignments).
 - `channel` (string, optional): Target channel name (omitted when `"main"`).
-- `control` (object, optional): Used for channel lifecycle operations.
+- `control` (object, optional): Channel registry and membership event. Supported `op` values are `create` (with `topic`), `archive`, `subscribe`, and `unsubscribe`. The membership operations include `members`, `prev`, and `next` maps keyed by member name. Example:
   ```json
   {
     "op": "subscribe",
     "channel": "backend",
-    "members": ["parser", "db"],
+    "members": ["parser"],
     "prev": { "parser": ["main"] },
     "next": { "parser": ["main", "backend"] }
   }
   ```
+
+Channel registry state is reconstructed from these events in board order. A create event records `topic`; an archive event marks the channel archived; subscriptions update the named member's channel list. `#<seq>` may be used in message text as a human reference to a board sequence number; it is not a parsed control field.

@@ -1,4 +1,9 @@
-# Ship license and provenance files alongside the package in source distributions.
-include LICENSE
-include NOTICE
-include README.md
+# Include the repository files needed by documented installation, tests, and UI use.
+include LICENSE NOTICE README.md AGENTS.md PORTING_MANIFEST.md pyproject.toml package.json plugin.json
+recursive-include assets *
+recursive-include .polytoken *.yaml *.md
+recursive-include schemas *.md
+recursive-include subagents *.md
+recursive-include skills *.md
+recursive-include tests *.py *.mjs *.json *.jsonl
+recursive-include sidecar_ui *.mjs *.js *.html *.css *.json *.md *.svg

@@ -73,6 +73,7 @@ Tracks the active roster, member configuration, and execution status.
 - `desired_state`: `"RUNNING"` or `"KILLED"`.
 - `job_id` / `state`: the native harness job handle and its latest reported state, recorded by `swarm(action="bind")`.
 - `killed`: `true` when terminated permanently; killed names stay reserved and cannot be reused.
+- `fork` (optional): source member name when this member was created as a fork; omitted for ordinary members.
 
 ### Model Fields:
 - `model` / `desired_model`: the model **request** as the coordinator or user made it. `"default"` means "use this member's role tier"; `"session"` means the model the Polytoken session is running; `"full"`/`"mini"`/`"nano"` name the reserved tier groups; anything else is a concrete model name, a `name(level)` reasoning variant, or a `@mg:<group>` reference.
