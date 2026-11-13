@@ -101,8 +101,11 @@ class SwarmToolHandlers:
             roster: Dict[str, Any] = {}
             for member_name, member in (members_info.get("members") or {}).items():
                 entry = dict(member)
-                if entry.get("job_id") and entry.get("phase") == "running":
-                    entry["liveness"] = "unverified"
+                if entry.get("phase", "").lower() == "running" and not entry.get("killed"):
+                    if self.worker_runner is not None and member_name not in ("coordinator", "monitor", "narrator"):
+                        entry["liveness"] = "running" if self.worker_runner.is_running(member_name) else "not_running"
+                    elif entry.get("job_id"):
+                        entry["liveness"] = "unverified"
                 roster[member_name] = entry
             res: Dict[str, Any] = {
                 "status": "ok",
@@ -218,6 +221,8 @@ class SwarmToolHandlers:
             else:
                 n_copies = 1
 
+            if isinstance(tasks, list) and not tasks:
+                return {"error": "Invalid 'tasks' parameter (must contain at least one task)"}
             if isinstance(tasks, list) and len(tasks) > 100:
                 return {"error": "Invalid 'tasks' parameter (maximum 100 tasks)"}
             if isinstance(tasks, list) and tasks and raw_n is not None and len(tasks) != n_copies:
@@ -236,6 +241,12 @@ class SwarmToolHandlers:
             # Sharded group via `tasks` or `n > 1`
             if (isinstance(tasks, list) and len(tasks) > 0) or n_copies > 1:
                 count = len(tasks) if (isinstance(tasks, list) and len(tasks) > 0) else n_copies
+                shard_names = [f"{base_name}-{idx}" for idx in range(1, count + 1)]
+                with self.bm.lock:
+                    members = self.bm.read_members().get("members", {})
+                    conflict = next((n for n in shard_names if n in members), None)
+                if conflict:
+                    return {"error": f"Member '{conflict}' already exists or was killed"}
                 added_members = []
                 brief_seqs = []
                 shard_briefs = []
@@ -361,14 +372,22 @@ class SwarmToolHandlers:
             if not killed_list:
                 return {"error": f"Member or group '{name}' not found or already killed"}
 
-            if self.worker_runner is not None:
-                for k_name in killed_list:
+            outcomes = {}
+            for k_name in killed_list:
+                if self.worker_runner is None:
+                    outcomes[k_name] = True
+                else:
                     ws_mode = members_before.get(k_name, {}).get("workspace_mode", "inherit")
-                    self.worker_runner.kill_worker(k_name, workspace_mode=ws_mode)
-
+                    outcomes[k_name] = bool(
+                        self.worker_runner.kill_worker(k_name, workspace_mode=ws_mode)
+                    )
+            all_confirmed = all(outcomes.values())
             return {
-                "status": "ok",
+                "status": "ok" if all_confirmed else "termination_unconfirmed",
                 "killed": name if len(killed_list) == 1 else killed_list,
+                "confirmed": name if len(killed_list) == 1 and all_confirmed else killed_list if all_confirmed else [k for k, v in outcomes.items() if v],
+                "killed_flag": True,
+                "termination_confirmed": all_confirmed,
             }
 
         elif action == "model":

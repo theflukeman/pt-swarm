@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .model_selection import read_session_model, resolve_model
 from .workspace_manager import WorkspaceManager
+from .board_manager import _CrossProcessLock
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -102,6 +103,16 @@ class WorkerProcessManager:
         self._lock = threading.RLock()
         self._spawn_lock = threading.Lock()
 
+    def _spawn_reservation(self, name: str) -> _CrossProcessLock:
+        """Serialize a worker name across server processes."""
+        return _CrossProcessLock(self.pids_dir / f".{name}.spawn.lock")
+
+    def _workspace_mode(self, name: str) -> str:
+        entry = self._read_pid(name)
+        if entry is not None and len(entry) > 2 and entry[2] in ("inherit", "share", "branch"):
+            return entry[2]
+        return self._workspace_modes.get(name, "inherit")
+
     @staticmethod
     def _resolve_default_cmd() -> Optional[List[str]]:
         env_cmd = os.environ.get("POLYTOKEN_WORKER_CMD")
@@ -173,7 +184,7 @@ class WorkerProcessManager:
             data = None
         if isinstance(data, dict):
             try:
-                return int(data["pid"]), data.get("start")
+                return int(data["pid"]), data.get("start"), data.get("workspace_mode")
             except (KeyError, TypeError, ValueError):
                 return None
         try:
@@ -181,8 +192,12 @@ class WorkerProcessManager:
         except ValueError:
             return None
 
-    def _write_pid(self, name: str, pid: int) -> None:
-        payload = {"pid": pid, "start": _process_start_marker(pid)}
+    def _write_pid(self, name: str, pid: int, workspace_mode: str = "inherit") -> None:
+        payload = {
+            "pid": pid,
+            "start": _process_start_marker(pid),
+            "workspace_mode": workspace_mode,
+        }
         self._pid_file(name).write_text(json.dumps(payload), encoding="utf-8")
 
     def is_running(self, name: str) -> bool:
@@ -194,7 +209,7 @@ class WorkerProcessManager:
                 self._processes.pop(name, None)
             entry = self._read_pid(name)
             if entry is not None:
-                pid, recorded_start = entry
+                pid, recorded_start = entry[:2]
                 if _is_pid_alive(pid):
                     current_start = _process_start_marker(pid)
                     state = _process_state(pid)
@@ -216,183 +231,208 @@ class WorkerProcessManager:
         workspace_mode: str = "inherit",
         role: str = "worker",
     ) -> Dict[str, Any]:
-        with self._spawn_lock:
-            with self._lock:
-                if self.is_running(name):
-                    return {"spawned": False, "status": "already_running", "name": name}
-            try:
-                work_dir = self.workspace_manager.provision_workspace(name, mode=workspace_mode)
-            except (OSError, subprocess.SubprocessError) as exc:
-                return {"spawned": False, "mode": "workspace_error", "name": name, "error": str(exc)}
-            with self._lock:
-                self._workspace_modes[name] = workspace_mode
-            initial_input = self.initial_input(name, prompt_text, brief_seq)
-
-            # The roster's model field is a request, not a selector: `default` is the
-            # sentinel for "use this role's tier" and `session` means the model this
-            # Polytoken session is running. Resolve it once, here, so every spawn path
-            # (`add`, an @mention wake, a restart) launches with the same selector.
-            desired_model, applied_model = resolve_model(
-                model, role, read_session_model(self.swarm_dir)
+        with self._spawn_lock, self._spawn_reservation(name):
+            return self._spawn_or_wake_reserved(
+                name, prompt_text, brief_seq, model, workspace_mode, role
             )
 
-            spec = {
+    def _spawn_or_wake_reserved(
+        self,
+        name: str,
+        prompt_text: str,
+        brief_seq: int,
+        model: Optional[str],
+        workspace_mode: str,
+        role: str,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            if self.is_running(name):
+                return {"spawned": False, "status": "already_running", "name": name}
+        try:
+            work_dir = self.workspace_manager.provision_workspace(name, mode=workspace_mode)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"spawned": False, "mode": "workspace_error", "name": name, "error": str(exc)}
+        with self._lock:
+            self._workspace_modes[name] = workspace_mode
+        initial_input = self.initial_input(name, prompt_text, brief_seq)
+
+        # The roster's model field is a request, not a selector: `default` is the
+        # sentinel for "use this role's tier" and `session` means the model this
+        # Polytoken session is running. Resolve it once, here, so every spawn path
+        # (`add`, an @mention wake, a restart) launches with the same selector.
+        desired_model, applied_model = resolve_model(
+            model, role, read_session_model(self.swarm_dir)
+        )
+
+        spec = {
+            "name": name,
+            "role": role,
+            "model": applied_model,
+            "desired_model": desired_model,
+            "workspace_mode": workspace_mode,
+            "workspace_path": str(work_dir),
+            "swarm_dir": str(self.swarm_dir),
+            "initial_input": initial_input,
+            "brief_seq": brief_seq,
+        }
+
+        if self.in_process_spawner is not None:
+            self.in_process_spawner(spec)
+            return {"spawned": True, "mode": "in_process", "name": name, "workspace": str(work_dir)}
+
+        if not self.worker_cmd_template:
+            return {
+                "spawned": False,
+                "mode": "unconfigured",
                 "name": name,
-                "role": role,
-                "model": applied_model,
-                "desired_model": desired_model,
-                "workspace_mode": workspace_mode,
-                "workspace_path": str(work_dir),
-                "swarm_dir": str(self.swarm_dir),
-                "initial_input": initial_input,
-                "brief_seq": brief_seq,
+                "workspace": str(work_dir),
+                "note": (
+                    "Set POLYTOKEN_WORKER_CMD or POLYTOKEN_BIN to auto-launch CLI worker "
+                    "processes, or make sure `polytoken` is on this server's PATH -- a "
+                    "declared `pass_env:` replaces the default HOME/PATH/LANG/TMPDIR set."
+                ),
             }
 
-            if self.in_process_spawner is not None:
-                self.in_process_spawner(spec)
-                return {"spawned": True, "mode": "in_process", "name": name, "workspace": str(work_dir)}
+        env = os.environ.copy()
+        env["POLYTOKEN_AGENT_NAME"] = name
+        env["POLYTOKEN_AGENT_ROLE"] = role
+        env["POLYTOKEN_SWARM_DIR"] = str(self.swarm_dir)
 
-            if not self.worker_cmd_template:
+        # The model travels on the command line: `polytoken` has no POLYTOKEN_MODEL
+        # variable, and `exec --model` is the only way to pin a worker's model.
+        cmd = self._expand_cmd(
+            self.worker_cmd_template,
+            {
+                "name": name,
+                "model": applied_model,
+                "workspace": str(work_dir),
+                "swarm_dir": str(self.swarm_dir),
+                "prompt": initial_input,
+            },
+        )
+
+        log_path = self.logs_dir / f"{name}.log"
+        log_fh = open(log_path, "a", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(work_dir),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+            )
+            with self._lock:
+                self._processes[name] = proc
+                self._log_handles[name] = log_fh
+                self._write_pid(name, proc.pid, workspace_mode)
+            if self.spawn_grace_seconds > 0:
+                deadline = time.monotonic() + self.spawn_grace_seconds
+                while time.monotonic() < deadline and proc.poll() is None:
+                    time.sleep(min(0.05, deadline - time.monotonic()))
+            if proc.poll() is not None:
+                with self._lock:
+                    self._processes.pop(name, None)
+                    self._log_handles.pop(name, None)
+                    self._pid_file(name).unlink(missing_ok=True)
+                try:
+                    log_fh.flush()
+                    with open(log_path, "rb") as log_tail:
+                        log_tail.seek(0, os.SEEK_END)
+                        size = log_tail.tell()
+                        log_tail.seek(max(0, size - 800))
+                        output = log_tail.read().decode("utf-8", errors="replace")
+                except OSError:
+                    output = ""
+                hint = ""
+                if "config load failed" in output or "is not set" in output:
+                    try:
+                        from .env_vars import referenced_env_names
+                        missing = referenced_env_names()
+                    except Exception:
+                        missing = []
+                    hint = (
+                        "The worker's `polytoken` could not load its config: the env vars "
+                        "it references are missing. Declare them under this server's "
+                        "`pass_env:`"
+                        + (f" ({', '.join(missing)})" if missing else "")
+                        + "; workers inherit the child's environment. "
+                        "`python3 -m pt_swarm.env_vars` prints that block for this machine."
+                    )
                 return {
                     "spawned": False,
-                    "mode": "unconfigured",
+                    "mode": "exited",
                     "name": name,
                     "workspace": str(work_dir),
-                    "note": (
-                        "Set POLYTOKEN_WORKER_CMD or POLYTOKEN_BIN to auto-launch CLI worker "
-                        "processes, or make sure `polytoken` is on this server's PATH -- a "
-                        "declared `pass_env:` replaces the default HOME/PATH/LANG/TMPDIR set."
-                    ),
-                }
-
-            env = os.environ.copy()
-            env["POLYTOKEN_AGENT_NAME"] = name
-            env["POLYTOKEN_AGENT_ROLE"] = role
-            env["POLYTOKEN_SWARM_DIR"] = str(self.swarm_dir)
-
-            # The model travels on the command line: `polytoken` has no POLYTOKEN_MODEL
-            # variable, and `exec --model` is the only way to pin a worker's model.
-            cmd = self._expand_cmd(
-                self.worker_cmd_template,
-                {
-                    "name": name,
-                    "model": applied_model,
-                    "workspace": str(work_dir),
-                    "swarm_dir": str(self.swarm_dir),
-                    "prompt": initial_input,
-                },
-            )
-
-            log_path = self.logs_dir / f"{name}.log"
-            log_fh = open(log_path, "a", encoding="utf-8")
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(work_dir),
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_fh,
-                    stderr=subprocess.STDOUT,
-                )
-                with self._lock:
-                    self._processes[name] = proc
-                    self._log_handles[name] = log_fh
-                    self._write_pid(name, proc.pid)
-                if self.spawn_grace_seconds > 0:
-                    deadline = time.monotonic() + self.spawn_grace_seconds
-                    while time.monotonic() < deadline and proc.poll() is None:
-                        time.sleep(min(0.05, deadline - time.monotonic()))
-                if proc.poll() is not None:
-                    # A worker that exits during startup is a failed spawn; reporting
-                    # success here would leave the coordinator waiting on a dead agent.
-                    with self._lock:
-                        self._processes.pop(name, None)
-                        self._log_handles.pop(name, None)
-                        self._pid_file(name).unlink(missing_ok=True)
-                    try:
-                        log_fh.flush()
-                        with open(log_path, "rb") as log_tail:
-                            log_tail.seek(0, os.SEEK_END)
-                            size = log_tail.tell()
-                            log_tail.seek(max(0, size - 800))
-                            output = log_tail.read().decode("utf-8", errors="replace")
-                    except OSError:
-                        output = ""
-                    hint = ""
-                    if "config load failed" in output or "is not set" in output:
-                        # The usual cause is a cleared MCP child environment: `polytoken`
-                        # cannot load a config that references provider env vars by name.
-                        # The names differ per install, so derive them from the config
-                        # rather than naming providers here. Imported here so that
-                        # `python3 -m pt_swarm.env_vars` is not pre-imported by the package.
-                        try:
-                            from .env_vars import referenced_env_names
-
-                            missing = referenced_env_names()
-                        except Exception:
-                            missing = []
-                        hint = (
-                            "The worker's `polytoken` could not load its config: the env vars "
-                            "it references are missing. Declare them under this server's "
-                            "`pass_env:`"
-                            + (f" ({', '.join(missing)})" if missing else "")
-                            + "; workers inherit the child's environment. "
-                            "`python3 -m pt_swarm.env_vars` prints that block for this machine."
-                        )
-                    return {
-                        "spawned": False,
-                        "mode": "exited",
-                        "name": name,
-                        "workspace": str(work_dir),
-                        "exit_code": proc.returncode,
-                        "log": str(log_path),
-                        "error": f"worker process exited immediately with code {proc.returncode}",
-                        "output": output,
-                        **({"hint": hint} if hint else {}),
-                    }
-                return {
-                    "spawned": True,
-                    "mode": "subprocess",
-                    "pid": proc.pid,
-                    "name": name,
-                    "workspace": str(work_dir),
+                    "exit_code": proc.returncode,
                     "log": str(log_path),
+                    "error": f"worker process exited immediately with code {proc.returncode}",
+                    "output": output,
+                    **({"hint": hint} if hint else {}),
                 }
-            except Exception as e:
-                return {"spawned": False, "error": str(e), "name": name}
-            finally:
-                log_fh.close()
-                with self._lock:
-                    if self._log_handles.get(name) is log_fh:
-                        self._log_handles.pop(name, None)
+            return {
+                "spawned": True,
+                "mode": "subprocess",
+                "pid": proc.pid,
+                "name": name,
+                "workspace": str(work_dir),
+                "log": str(log_path),
+            }
+        except Exception as e:
+            return {"spawned": False, "error": str(e), "name": name}
+        finally:
+            log_fh.close()
+            with self._lock:
+                if self._log_handles.get(name) is log_fh:
+                    self._log_handles.pop(name, None)
 
-    def kill_worker(self, name: str, workspace_mode: str = "inherit"):
-        with self._lock:
-            proc = self._processes.pop(name, None)
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2.0)
-            else:
-                pid = self._read_pid(name)
-                if pid is not None and _is_pid_alive(pid[0]):
-                    current_start = _process_start_marker(pid[0])
-                    state = _process_state(pid[0])
+    def kill_worker(self, name: str, workspace_mode: str = "inherit") -> bool:
+        with self._spawn_lock, self._spawn_reservation(name), self._lock:
+            pid_entry = self._read_pid(name)
+            if pid_entry is not None and len(pid_entry) > 2 and pid_entry[2] in ("inherit", "share", "branch"):
+                workspace_mode = pid_entry[2]
+            proc = self._processes.get(name)
+            confirmed = proc is not None and proc.poll() is not None
+            try:
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3.0)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=2.0)
+                    confirmed = proc.poll() is not None
+                elif pid_entry is not None:
+                    pid = pid_entry[0]
+                    alive = _is_pid_alive(pid)
+                    current_start = _process_start_marker(pid)
+                    state = _process_state(pid)
                     valid_identity = (
-                        pid[1] is not None and current_start == pid[1]
+                        pid_entry[1] is not None and current_start == pid_entry[1]
                         if sys.platform.startswith("linux")
-                        else pid[1] is None or not current_start or current_start == pid[1]
+                        else pid_entry[1] is None or not current_start or current_start == pid_entry[1]
                     )
-                    if valid_identity and state != "Z":
+                    if not alive:
+                        confirmed = True
+                    elif valid_identity and state != "Z":
                         try:
-                            os.kill(pid[0], signal.SIGTERM)
+                            os.kill(pid, signal.SIGTERM)
                         except OSError:
                             pass
-            self._pid_file(name).unlink(missing_ok=True)
-            self.workspace_manager.cleanup_workspace(name, mode=workspace_mode)
+                        deadline = time.monotonic() + 3.0
+                        while time.monotonic() < deadline and _is_pid_alive(pid):
+                            if sys.platform.startswith("linux") and _process_state(pid) == "Z":
+                                break
+                            time.sleep(0.05)
+                        confirmed = not _is_pid_alive(pid) or _process_state(pid) == "Z"
+            except (OSError, subprocess.SubprocessError):
+                confirmed = False
+            if confirmed:
+                self._processes.pop(name, None)
+                self._log_handles.pop(name, None)
+                self._pid_file(name).unlink(missing_ok=True)
+                self.workspace_manager.cleanup_workspace(name, mode=workspace_mode)
+            return confirmed
 
     def kill_all(self):
         with self._lock:

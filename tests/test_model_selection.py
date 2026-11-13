@@ -261,6 +261,25 @@ class ModelHookTests(unittest.TestCase):
                 read_session_model(Path(tmp) / ".swarm" / "default"), SESSION_MODEL
             )
 
+    def test_worker_hook_does_not_overwrite_coordinator_session_model(self):
+        with TemporaryDirectory() as tmp:
+            swarm_dir = Path(tmp) / "swarm"
+            write_session_model(swarm_dir, SESSION_MODEL)
+            env = {
+                "POLYTOKEN_MODEL_NAME": "vendor/worker-model",
+                "POLYTOKEN_PROJECT_DIR": tmp,
+                "POLYTOKEN_SWARM_DIR": str(swarm_dir),
+                "POLYTOKEN_AGENT_NAME": "worker-1",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                code = model_hook.main([])
+            self.assertEqual(code, 0)
+            self.assertEqual(read_session_model(swarm_dir), SESSION_MODEL)
+            self.assertEqual(
+                read_session_model(swarm_dir / "workers" / "worker-1"),
+                "vendor/worker-model",
+            )
+
     def test_hook_is_a_noop_without_a_model(self):
         with TemporaryDirectory() as tmp:
             swarm_dir = Path(tmp) / "swarm"

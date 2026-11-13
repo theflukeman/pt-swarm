@@ -15,8 +15,9 @@ from .board_manager import BoardManager
 
 
 class SwarmStallMonitor:
-    def __init__(self, board_manager: BoardManager, check_interval_seconds: float = 60.0):
+    def __init__(self, board_manager: BoardManager, check_interval_seconds: float = 60.0, worker_runner=None):
         self.bm = board_manager
+        self.worker_runner = worker_runner
         self.interval = check_interval_seconds
         self.running = False
         self._thread: Optional[threading.Thread] = None
@@ -70,13 +71,21 @@ class SwarmStallMonitor:
         }
         if not live_workers:
             return
-        any_working = any(m.get("wake_mode") == "working" for m in live_workers.values())
+        any_working = any(
+            m.get("wake_mode") == "working"
+            and (self.worker_runner is None or self.worker_runner.is_running(name))
+            for name, m in live_workers.items()
+        )
         if any_working:
             return  # Normal active computation, not a stall
 
         # 3. Check if all live members are parked
         parked_modes = {"mentions", "anything"}
-        all_parked = all(m.get("wake_mode") in parked_modes for m in live_workers.values())
+        all_parked = all(
+            m.get("wake_mode") in parked_modes
+            or (self.worker_runner is not None and not self.worker_runner.is_running(name))
+            for name, m in live_workers.items()
+        )
         if not all_parked:
             return
 

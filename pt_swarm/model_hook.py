@@ -49,8 +49,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     model = (os.environ.get("POLYTOKEN_MODEL_NAME") or "").strip()
     if not model:
         return 0
+    swarm_dir = resolve_swarm_dir(args.swarm_dir)
+    agent_name = (os.environ.get("POLYTOKEN_AGENT_NAME") or "").strip()
+    if agent_name and agent_name != "coordinator":
+        swarm_dir = swarm_dir / "workers" / agent_name
     try:
-        write_session_model(resolve_swarm_dir(args.swarm_dir), model)
+        write_session_model(swarm_dir, model)
     except OSError:
         # A hook must never block the session over a bookkeeping failure.
         return 1
