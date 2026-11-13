@@ -4,7 +4,7 @@ This package is a complete port of the **Antigravity Swarm** architecture, packa
 
 > **Unaffiliated project.** This is an independent, unofficial port. It is not affiliated with, endorsed by, sponsored by, or supported by Polytoken, Google Antigravity, or their maintainers. Product names are used only to describe interoperability and provenance.
 
-> **Third-party assets.** Files adapted from Antigravity — `sidecar_ui/`, `skills/`, `plugin.json`, and `assets/logo.svg` — are included for interoperability and may be subject to separate upstream terms. The MIT license in this repository covers the code authored for this port, not those upstream assets.
+> **Third-party assets.** Files adapted from Antigravity — `sidecar_ui/`, `skills/`, `plugin.json`, and `assets/logo.svg` — are included for interoperability and may be subject to separate upstream terms. The MIT license in this repository covers the code authored for this port, not those upstream assets. See [NOTICE](./NOTICE) for the file-by-file breakdown.
 
 It enables multiple autonomous AI agents to work in parallel on separated tasks, synchronized via an append-only shared message board with @mentions, channels, zero-token sleep parking, and stall monitoring.
 

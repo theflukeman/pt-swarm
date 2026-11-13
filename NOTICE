@@ -1,0 +1,70 @@
+polytoken-swarm
+Copyright (c) 2026 theflukeman
+
+This repository is an independent, unofficial port of the Antigravity Swarm
+architecture for the Polytoken harness. It is not affiliated with, endorsed by,
+sponsored by, or supported by Polytoken, Google Antigravity, or their
+maintainers. Product names are used only to describe interoperability and
+provenance.
+
+The MIT license in LICENSE covers the code and documentation authored for this
+port. It does not, and cannot, relicense material that originated upstream.
+This file records which material that is.
+
+
+Third-party material
+--------------------
+
+The following files are copied from, or adapted from, Antigravity's bundled
+swarm assets. They are included only for interoperability and remain subject to
+whatever terms apply upstream. No license is granted for them by this project:
+
+  sidecar_ui/ (except sidecar_ui/sidecar_sdk/)
+      main.mjs, app.js, hive.js, hive.css, styles.css, index.html,
+      channels.mjs, narrator_bootstrap.js, sidecar.json, README.md
+  skills/native_swarm/SKILL.md
+  skills/swarm_monitor/SKILL.md
+  skills/swarm_narrator/SKILL.md
+  .polytoken/skills/            (mirrors the same skill runbooks)
+  plugin.json
+  assets/logo.svg
+
+
+Derived material
+----------------
+
+The role prompts in polytoken_swarm/agent_definitions/ were written for this
+port, but they describe and restate Antigravity's swarm worker, coordinator,
+monitor, and narrator behavior. Treat them as derived from that design rather
+than as wholly original text.
+
+The subagent manifests in subagents/ and .polytoken/subagents/ condense the
+same behavior for Polytoken's format.
+
+
+Authored for this port
+----------------------
+
+The MIT license applies to, among other things:
+
+  polytoken_swarm/          board engine, MCP server, worker supervisor,
+                            workspace isolation, stall monitor, adapter, CLI,
+                            tool schemas, and agent prompts
+  sidecar_ui/sidecar_sdk/   standalone shim that lets the dashboard run
+                            outside Antigravity
+  tests/                    Python and Node test suites and fixtures
+  schemas/                  on-disk format specifications
+  README.md, AGENTS.md, PORTING_MANIFEST.md, NOTICE
+
+Provenance for each component is documented in PORTING_MANIFEST.md.
+
+
+Before redistributing or promoting this project
+----------------------------------------------
+
+Confirm the upstream terms for the copied assets above, or replace them with
+originals. The logo and dashboard are the likeliest to carry branding or
+redistribution restrictions; the skill runbooks are the likeliest to be
+redistributable with attribution. Deleting the copied assets and pointing
+users at their own installation is a valid alternative if the terms are
+unclear.

@@ -1,0 +1,4 @@
+# Ship license and provenance files alongside the package in source distributions.
+include LICENSE
+include NOTICE
+include README.md
