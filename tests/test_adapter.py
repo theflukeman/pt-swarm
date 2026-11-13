@@ -103,6 +103,23 @@ class TestWorkerProcessManager(unittest.TestCase):
         self.assertFalse(mgr._pid_file("doomed").exists())
         self.assertTrue(mgr.is_running("doomed") is False)
 
+    def test_spawn_reports_a_config_load_failure_hint(self):
+        # A cleared MCP child environment cannot load a polytoken config that
+        # references provider env vars; the failure should name the fix.
+        script = (
+            "print('Error: config load failed: env var $NEURALWATT_API_KEY referenced "
+            "in config.yaml is not set'); raise SystemExit(1)"
+        )
+        mgr = WorkerProcessManager(
+            swarm_dir=self.swarm_dir,
+            workspace_root=self.test_dir,
+            worker_cmd_template=[sys.executable, "-c", script],
+            spawn_grace_seconds=0.25,
+        )
+        res = mgr.spawn_or_wake(name="codeless", prompt_text="work", brief_seq=1)
+        self.assertFalse(res["spawned"])
+        self.assertIn("pass_env", res["hint"])
+
     def test_prompt_is_substituted_into_worker_command(self):
         out = self.test_dir / "prompt.txt"
         script = "import sys, pathlib, time; pathlib.Path(sys.argv[2]).write_text(sys.argv[1]); time.sleep(1.0)"

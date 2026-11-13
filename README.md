@@ -196,12 +196,18 @@ coordinator_prompt = adapter.load_system_prompt("coordinator")
        env:
          POLYTOKEN_SWARM_DIR: "./.swarm/default"
          POLYTOKEN_AGENT_NAME: "coordinator"
+       # Provider credentials `polytoken` needs to load its own config; workers
+       # inherit this child's environment. See step 3.
+       pass_env:
+         - NEURALWATT_API_KEY
+         - EXA_API_KEY
+         - TAVILY_API_KEY
    ```
    Polytoken launches stdio MCP servers with the **project directory as the working directory**, so `./.swarm/default` isolates each workspace's board to that project.
 
    Because this entry sits in the *global* config, every project now gets a swarm: a session creates `.swarm/default/` lazily on first use. To enable it in selected projects only, put the same block in that project's `.polytoken/config.yaml` instead.
 
-3. **Environment variables must be declared**: MCP stdio children start with a *cleared* environment. Only `HOME`, `PATH`, `LANG`, and `TMPDIR` are passed by default; anything else (for example `POLYTOKEN_WORKER_CMD` or `POLYTOKEN_BIN`) must appear under `env:` or `pass_env:` for that server. Variables exported in your shell are not visible to the server.
+3. **Environment variables must be declared**: MCP stdio children start with a *cleared* environment. Only `HOME`, `PATH`, `LANG`, and `TMPDIR` are passed by default; anything else (for example `POLYTOKEN_WORKER_CMD` or `POLYTOKEN_BIN`) must appear under `env:` or `pass_env:` for that server. Variables exported in your shell are not visible to the server. This includes the credentials `polytoken` itself reads: its global config references them by name (`$NEURALWATT_API_KEY`, `$EXA_API_KEY`, `$TAVILY_API_KEY`), so a child without them cannot load that config at all — and since workers inherit the child's environment, every `polytoken exec` spawn then dies at startup with `config load failed`. Such a spawn is reported as failed, with the exit code, the log tail, and a hint naming `pass_env:`.
 
 4. **Copy subagents & skills globally** (prefer copying over symlinking so the global setup survives moving or deleting this checkout):
    ```bash

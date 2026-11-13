@@ -272,6 +272,16 @@ class WorkerProcessManager:
                         output = log_path.read_text(encoding="utf-8", errors="replace")[-800:]
                     except OSError:
                         output = ""
+                    hint = ""
+                    if "config load failed" in output or "is not set" in output:
+                        # The usual cause is a cleared MCP child environment: `polytoken`
+                        # cannot load a config that references provider env vars by name.
+                        hint = (
+                            "The worker's `polytoken` could not load its config. Polytoken "
+                            "starts stdio children with a cleared environment, so declare the "
+                            "provider variables it references (NEURALWATT_API_KEY and friends) "
+                            "under this server's `pass_env:`; workers inherit them."
+                        )
                     return {
                         "spawned": False,
                         "mode": "exited",
@@ -281,6 +291,7 @@ class WorkerProcessManager:
                         "log": str(log_path),
                         "error": f"worker process exited immediately with code {proc.returncode}",
                         "output": output,
+                        **({"hint": hint} if hint else {}),
                     }
                 return {
                     "spawned": True,
