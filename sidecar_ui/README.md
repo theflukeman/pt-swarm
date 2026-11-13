@@ -16,17 +16,19 @@ empty state and keeps watching.
 
 ## Data sources (read-only)
 
-One directory per swarm, under the coordinator's conversation:
-`<appData>/brain/<coordinatorConv>/.system_generated/swarm/`
+A native swarm is one directory: `$POLYTOKEN_SWARM_DIR`, or
+`<cwd>/.swarm/<swarm id>` (default `.swarm/default`) when that is unset. The
+pane reads the board, the roster and the narrator's files from it.
 
 | File | Meaning |
 |---|---|
-| `board.jsonl` | append-only feed, one `{"seq","agent","text","time"}` per line |
-| `members.json` | roster `{"title","members":{name:{conversation_id,model,role,wake_mode,wait_since,last_read_seq,last_nudged_seq,last_park_blocked_seq,killed}}}`; `model` is the request and `applied_model` the resolved selector (see *Model labels* below) |
+| `board.jsonl` | append-only feed, one `{"seq","agent","text","time"}` per line (`channel` and `control` on channel traffic) |
+| `members.json` | roster `{"title","members":{name:{conversation_id,role,phase,desired_state,model,applied_model,wake_mode,wait_since,last_read_seq,last_nudged_seq,last_park_blocked_seq,killed,channels}}}`; `model` is the request and `applied_model` the resolved selector (see *Model labels* below) |
 | `session_model.json` | the model this Polytoken session is running, written by `pt_swarm.model_hook` when its `hooks.json` entry is installed |
 | `view.json` | the narrator's Overview data (written by the narrator member; see below) |
 | `view.html` | the narrator's Overview template |
-| `<appData>/brain/<memberConv>/.system_generated/logs/transcript.jsonl` | each member's compact transcript, for its step count, current activity and whether its last step failed |
+| `brain/` | only the images a `view.json` frame or `file` action points at: `/api/frame` serves one only when it is listed and lies under `<swarm_dir>/brain/` |
+| `pids/<name>.pid` | `{"pid","start"}` per spawned worker, maintained by the adapter; the pane does not read it |
 
 **Model labels.** The UI shows what a member runs, not what the roster asked for.
 `model` in `members.json` is a request (`default`, `session`, `full`/`mini`/`nano`, or
@@ -36,24 +38,25 @@ snapshot's `model` field is one label: the reserved tier groups read as `full ti
 `session_model.json` (falling back to the applied selector when the hook is not
 installed); anything else passes through.
 
-`appData` is the sidecar's own app data dir (derived from
-`ANTIGRAVITY_EXECUTABLE_DATA_DIR`). Opened standalone without it, the board
-reads every `~/.gemini/<product>` dir that has a `brain/`. Finding a worker's
-swarm scans the brain dirs for rosters; that scan is cached for 3 s.
-
-Member status follows `manage_swarm status` (`board.StateOf`): `killed` if
-killed, `waiting` if the member's run has stopped, else `working`. The run is
-judged from the newest transcript steps: it has stopped when the turn ended on
-a reply with no tool calls, or on the results of a tool batch that included
-`swarm_wait` with `swarm_wait`'s own result `DONE` (a tool sent to the
-background in the same batch is logged `RUNNING` and does not hold the turn).
-A member's activity line comes from the current turn only, so a member just
-woken shows none until its first new planner step lands. `wake_mode` is not the state (a member parked in
-`swarm_wait` and woken by a background task stays `mentions` while it works);
-it is used only for the "for @mentions / any post" label, and as the fallback
-when a member has no transcript. Unread = board head − `last_read_seq`.
-Mentions follow `board/mentions.go`: `@name` / `@all` at a word start,
+**Member status** is the roster's own state, not a transcript guess: `killed`
+when the member is killed (or its `phase` / `desired_state` is `KILLED`),
+`waiting` while `wait_since` is set (a member parked in `swarm_wait`), else
+`working`. `wake_mode` is the wake policy, not the state; it is used for the
+"for @mentions / any post" label only. Unread = board head − `last_read_seq`,
+clamped to the messages the member's channels let it see. Mentions follow
+`board_manager.parse_mentions`: `@name` / `@all` at a word start,
 case-insensitive, not followed by more name characters.
+
+**Standalone build only.** This pane is a port of the Antigravity Swarm view.
+Opened standalone against an Antigravity app data dir
+(`ANTIGRAVITY_EXECUTABLE_DATA_DIR`), it also reads that older layout under
+`<appData>/brain/<conv>/.system_generated/`, including each member's
+`transcript.jsonl`, which supplies the step count, the activity line, failed
+steps and the narrator's freshness. Opened standalone without that variable it
+reads every `~/.gemini/<product>` dir that has a `brain/` (cached for the
+process). A native swarm has none of those files: it reports no step count, no
+activity line and no transcript-derived system items, and its member status is
+the roster-derived state above.
 
 ### Remote boards (swarms with members on several machines)
 
@@ -106,8 +109,8 @@ swarm dir. The plugin's narrator is the newest non-killed narrator member
 (highest suffix wins); if all are killed, the newest killed one (shown as
 **stopped**). Role workers (`m.role` other than `worker` and `coordinator`, or
 matching `^(narrator|monitor)(-\d+)?$` on older boards) are left out of the
-task-worker member count, the status counts and the `@mention` graph, and show
-their role badge in the Members tab.
+task-worker member count, the status counts, the Members list and the
+`@mention` graph; the Overview's team area names them by role.
 
 ### File contract (read-only, untrusted)
 
@@ -127,18 +130,28 @@ their role badge in the Members tab.
     review|stuck|quota|error|fyi, severity ∈ high|med|low, title, why, refs,
     actions}], workstreams:[{id, title, owners, state ∈ queued|active|blocked|
     review|done|failed, note, refs, actions}], milestones:[{id, text, refs}],
-    risks:[{id, text, refs}], feedback_ack:{through_seq, text}}`; refs are
+    risks:[{id, text, refs}], feedback_ack:{through_seq, text},
+    reel:{frames:[{path, caption, seq}]}}`; refs are
     `{seq}` or `{member}`; actions are `{type, target, label}` with type
     `open_conv` (roster name), `board_post` (seq ≤ head), `url` (https on
     `docs.google.com`, the hosts in an optional `url_hosts.json` next to
     `main.mjs`, or their subdomains) or `file` (exact key of `allowedFiles`).
+    A `reel` frame's `path` is served only if it is listed there, is an image,
+    and lies under `<appData>/brain/` (`<swarm_dir>/brain/` for a native
+    swarm); 24 frames is the recommended maximum (see
+    [`schemas/view_json.md`](../schemas/view_json.md)).
 -   app.js re-validates everything before use (`sanitizeView`): unknown
     enums are coerced, strings and lists clamped, bad actions dropped, refs
     with `seq > head` or members not on the roster marked *unverified* (⚠ in
     the plain view), items without refs marked *uncited*, attention re-ranked
     decision > failure > review > stuck > quota/error > fyi.
 
-### System items and narrator state (from rosters and transcripts only)
+### System items and narrator state (from rosters and transcripts)
+
+These read member transcripts, so they apply where transcripts exist: the older
+Antigravity layout (`<appData>/brain/<conv>/.system_generated/logs/`). A native
+swarm has none, so its `systemAttention` is empty and its member status comes
+from the roster (above); a remote board carries its own `phase` / `updated_at`.
 
 -   `systemAttention`: a member's newest step failed (a model `ERROR_MESSAGE`
     at once, a failed tool step once it stayed last for 60 s) → **error** or
@@ -148,6 +161,27 @@ their role badge in the Members tab.
     (badge **paused: quota/error**) | `waiting` | `working`.
 -   Stale badge: head − max(`as_of_seq`, narrator `last_read_seq`) ≥ 10 while
     the narrator isn't working, or idle > 60 s with unread posts.
+
+### Progress reel (`view.json` `reel`, images from `/api/frame`)
+
+The Overview shows a then/now comparison of screenshots the narrator lists in
+`view.json`: `reel: {frames: [{path, caption?, seq?}]}` (at least 2, at most 40
+rendered, 24 recommended). Images are not part of the JSON: each `<img>` asks
+`GET /api/frame?conversationId=<id>&path=<url-encoded absolute path>&seq=<n>`,
+which serves the file **only** when
+
+-   the path is listed in the current `view.json` `reel.frames` (or, with the
+    built-in Overview on and no list, in a worker's most recent
+    `screenshot: <absolute path> | <caption>` lines — the last 24 distinct
+    paths), and
+-   it is an absolute path with a `.png` / `.jpg` / `.jpeg` / `.webp` extension
+    whose `realpath` is an existing regular file under
+    `realpath(<appData>/brain/)` (for a native swarm, `<swarm_dir>/brain/`),
+    and is at most 8 MB.
+
+Everything else is a 404, including a symlink that resolves outside the root and
+a path that is listed but not under it. Responses are `Cache-Control: private,
+max-age=3600`.
 
 ### The frame (`NarratorFrameHost` in app.js)
 
@@ -201,34 +235,45 @@ backstops are the parent's validation and the plain view.
 
 ## HTTP API
 
-One `GET` JSON route, polled by the UI with the last `etag`:
+One `GET` JSON route, polled by the UI with the last `etag`, plus one
+`GET` image route:
 
--   `/api/swarm[?conversationId=X][&etag=E]` — `conversationId` defaults to the
-    sidecar's conversation (`ANTIGRAVITY_CONVERSATION_ID`). Returns
+-   `/api/swarm[?conversationId=X][&etag=E][&raw=1]` — `conversationId`
+    defaults to the sidecar's conversation (`SWARM_CONVERSATION_ID`). Returns
     -   `{conversationId, swarm:null, member:null}` if the conversation is in no
         swarm;
     -   `{conversationId, swarm, member, unchanged:true, etag}` if nothing
-        changed;
-    -   otherwise `{conversationId, swarm, member, id, title, appData, dir,
+        changed (and `raw` was not asked for);
+    -   otherwise `{conversationId, swarm, member, id, title,
         etag, head, members:[…, status, unread, posts, lastPostSeq,
         lastPostTime, steps, activity, activityKind, narrator, failure,
         transcriptMtime],
-        messages:[{seq, agent, text, time, mentions, all}],
+        messages:[{seq, agent, text, time, mentions, all, channel, control,
+        channel_mentions}],
+        channels:[{name, topic, created_by, archived}],
         edges:[{from, to, count, direct, viaAll}],
         narrator:{name, conversation_id, state, reason, detail,
         last_read_seq, transcriptMtime}|null, narratorState,
-        view:{exists, dir, source, json, jsonMtime, jsonError, html, htmlKey,
-        htmlMtime, htmlError}, allowedFiles, systemAttention:[{id, kind,
+        view:{exists, source, json, jsonMtime, jsonError, html, htmlKey,
+        htmlMtime, htmlError}, allowedFiles, urlHosts, systemAttention:[{id, kind,
         member, conversation_id, text, detail, since}],
-        raw:{members, board, view}}`.
-        `@all` edges go to every other member.
+        frames:[{path, seq, caption}]}`.
+        `@all` edges go to every other member. No absolute path is sent: `view`
+        names only whether the narrator's files came from the swarm dir
+        (`source: "swarm"`) or its own `swarm_view` dir.
+
+    The raw files (`raw:{members, board, view}`) are **opt-in**: a poll sends
+    them only with `&raw=1` (the Raw tab does), so a 2,000-post board is not
+    copied into every response. A request with `raw=1` is always answered in
+    full, even when the client's `etag` still matches.
+-   `/api/frame?conversationId=X&path=<absolute image path>` — one listed
+    image, under the containment described above; 404 otherwise.
 
 ## Views
 
-A sticky header shows the swarm title, a Live indicator and a plain-text status
-line (active / waiting / killed counts, time of the last post, and which member
-this conversation is). Underline tabs carry post / member counts and support
-Arrow / Home / End keys. On wide panes the content is a centred column.
+A sticky header shows the swarm title, a Live indicator and an underline tab bar
+that carries post / member counts and supports Arrow / Home / End keys. On wide
+panes the content is a centred column.
 
 - **Overview** (shown where the built-in Overview is on, i.e.
   `SWARM_OVERVIEW=true` from the `enable-swarm-overview` flag, or once the
@@ -237,7 +282,8 @@ Arrow / Home / End keys. On wide panes the content is a centred column.
   **updating** / **watching** / **stopped** / **paused: quota|error** and
   **stale** badges, "read #N · updated …"), the system strip, notices, a
   "narrator view · AI-generated" label with a **Plain view** toggle
-  (remembered in `localStorage`; `?narrator=plain` forces it), the sandboxed
+  (remembered in `localStorage`; the frame is opt-in with `?narrator=frame`,
+  which is also the only way to force it), the sandboxed
   frame or the plain view, and a footer ("Want this view different? Tell the
   coordinator." + **Open coordinator chat** + the narrator's last
   `feedback_ack`). Without the built-in Overview, `view.json` or `view.html`
@@ -275,16 +321,16 @@ Arrow / Home / End keys. On wide panes the content is a centred column.
   someone else wrote.
 - **Members** — one row per member, ordered active first, then waiting, then
   killed (coordinator first, then alphabetical within each group), with a status
-  dot (filled green = active, hollow = waiting, grey = killed) and three lines:
+  dot (filled green = active, hollow = waiting, grey = killed) and two lines:
   identity (name, "you" for
-  the pane's own member, role, model); status (with wake mode), step count,
-  post count and unread posts; then, for active members only, current activity
-  (the newest tool call's `toolSummary` or a short label for it, else the
-  newest thinking heading), shimmering like the toolkit's in-progress
-  `ShimmerText`. An open-conversation action (`sidecar.ui.toggleConversation`)
+  the pane's own member, role, model); status (with wake mode), last read seq,
+  post count and unread posts. Role workers (narrator, monitor) are counted
+  separately and are not listed here; the step count and current activity line
+  are filled only from the older Antigravity layout's transcripts (a native
+  swarm has none). An open-conversation action (`sidecar.ui.toggleConversation`)
   sits on the right; read-cursor details are in the unread tooltip. Killed
-  members are **hidden by default**; once any member is killed, a
-  "Show killed (N)" switch above the list brings them back (struck through).
+  members are **hidden by default**, behind a "Retired (N)" disclosure that
+  brings them back (struck through).
 - **Graph** (shown where `SWARM_GRAPH_TAB=true`, from the
   `enable-swarm-graph-tab` flag; on by default) — neutral
   pill nodes (status dot + name) and monochrome @mention
@@ -329,30 +375,36 @@ Key elements carry `data-testid`s: `swarm-loading`, `swarm-board`,
 `swarm-overview-system`, `swarm-overview-system-item`,
 `swarm-overview-notice`, `swarm-overview-label`, `swarm-overview-mode`,
 `swarm-overview-frame`, `swarm-overview-iframe`, `swarm-overview-plain`,
-`swarm-overview-headline`, `swarm-overview-{attention,workstreams,milestones,risks}`,
 `swarm-overview-footer`, `swarm-overview-open-coordinator`,
-`swarm-overview-ack`, `swarm-feed-notice`, `swarm-toast`,
+`swarm-overview-ack`, `swarm-onboarding`, `swarm-toast`,
 `swarm-search`, `swarm-filter-toggle`, `swarm-filters` (the collapsed filter
 panel), `swarm-agents`, `swarm-member-chip` (both inside `swarm-filters`),
-`swarm-feed`, `swarm-message`, `swarm-message-more`, `swarm-unread-divider`,
-`swarm-feed-empty`, `swarm-clear-filters`, `swarm-jump-latest`,
-`swarm-members`, `swarm-members-toolbar`, `swarm-members-show-killed`,
-`swarm-member-row`, `swarm-member-model`, `swarm-member-owner`,
+`swarm-channel-tabs`, `swarm-channel-tab`, `swarm-channel-filter`,
+`swarm-feed`, `swarm-message`, `swarm-message-channel`, `swarm-message-more`,
+`swarm-seq-ref`, `swarm-unread-divider`, `swarm-feed-empty`,
+`swarm-control-message`, `swarm-clear-filters`, `swarm-jump-latest`,
+`swarm-members`, `swarm-member-channels`, `swarm-member-owner`,
 `swarm-member-seen`, `swarm-source`,
-`swarm-member-activity`, `swarm-member-steps`, `swarm-member-unread`,
 `swarm-graph`, `swarm-graph-hide-inactive`, `swarm-replay-play`,
 `swarm-raw`, `swarm-raw-copy`, and for the empty state `swarm-empty-state`,
 `swarm-empty-title`, `swarm-empty-body`.
 
 ## Develop
 
-Opened standalone (`http://localhost:<port>/?conversationId=<id>`), the page
-uses `conversationId` in place of the pane's conversation. To run it outside
-the LS, start `node --import <sidecar SDK>/node/register_loader.js main.mjs`
-with `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN` and
-`ANTIGRAVITY_SIDECAR_WEB_PORT` set (any values; the page only uses `GET`
-routes) and `ANTIGRAVITY_EXECUTABLE_DATA_DIR` under an app data dir with a
-`brain/` holding swarm dirs.
+Run it from the project root (the default swarm dir is relative to the process
+CWD):
+
+    POLYTOKEN_SWARM_DIR=.swarm/default node sidecar_ui/main.mjs
+    # http://127.0.0.1:5388/?conversationId=<coordinator conversation id>
+
+`POLYTOKEN_SWARM_DIR` points at the swarm dir; `PORT` (default `5388`) and
+`HOST` set the listener. `HOST` is clamped to a loopback address, and every
+request whose `Host` (or `Origin`, when sent) is not loopback is answered
+`403`, so a page on another origin cannot read the board through DNS
+rebinding. `SIDECAR_NO_LISTEN=1` imports `main.mjs` without listening, for
+route tests (`app.routes.get('GET:/api/swarm')`). The older Antigravity layout
+is still readable by pointing `ANTIGRAVITY_EXECUTABLE_DATA_DIR` at an app data
+dir with `brain/` swarms.
 
 The sidecar is read-only: it writes no files, registers no `POST` routes of
 its own and never messages agents.

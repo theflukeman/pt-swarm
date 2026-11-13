@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { request as httpRequest } from 'node:http';
 
 test('sidecar_ui resolves directSwarmDir only for its members and accepts coordinator id', async () => {
   const root = mkdtempSync(join(tmpdir(), 'swarm-sidecar-'));
@@ -25,6 +26,7 @@ test('sidecar_ui resolves directSwarmDir only for its members and accepts coordi
           conversation_id: '11111111-1111-1111-1111-111111111111',
           role: 'worker',
           wake_mode: 'anything',
+          wait_since: 1,
           model: 'default',
           applied_model: '@mg:polytoken:default_model_mini',
         },
@@ -34,6 +36,15 @@ test('sidecar_ui resolves directSwarmDir only for its members and accepts coordi
           wake_mode: 'anything',
           model: 'vendor/pinned(high)',
           applied_model: 'vendor/pinned(high)',
+        },
+        w3: {
+          conversation_id: '33333333-3333-3333-3333-333333333333',
+          role: 'worker',
+          wake_mode: 'mentions',
+          job_id: 'job-3',
+          state: 'done',
+          model: 'default',
+          applied_model: '@mg:polytoken:default_model_full',
         },
       },
     }),
@@ -62,6 +73,9 @@ test('sidecar_ui resolves directSwarmDir only for its members and accepts coordi
     assert.equal(r1.title, 'Direct Swarm');
     const w1 = r1.members.find((m) => m.name === 'w1');
     assert.equal(w1.status, 'waiting');
+    // A finished harness job is not "working": the roster's own state decides.
+    assert.equal(r1.members.find((m) => m.name === 'w3').status, 'waiting');
+    assert.equal(r1.members.find((m) => m.name === 'coordinator').status, 'working');
 
     // Model labels show what the member runs, not the roster's request: tier
     // groups read as tiers, `session` reads as the model the session is on, and
@@ -81,16 +95,57 @@ test('sidecar_ui resolves directSwarmDir only for its members and accepts coordi
     assert.ok(canonicalFile(sampleImg, directDir));
     assert.equal(canonicalFile(join(directDir, '..', 'escape.png'), directDir), null);
 
+    // No absolute paths leave the server: a rebound page learns the board,
+    // not where the operator's swarm lives.
+    assert.equal(r1.dir, undefined);
+    assert.equal(r1.appData, undefined);
+    assert.equal(r1.view.dir, undefined);
+
+    // The Raw tab's file contents are opt-in (?raw=1); a normal poll carries
+    // the board once, not twice.
+    assert.equal(r1.raw, undefined);
+    const r4 = await swarmHandler({ raw: '1' });
+    assert.match(r4.raw.board, /@w1 hi/);
+    assert.match(r4.raw.members, /"coordinator"/);
+
     // ETag unchanged response
     const r3 = await swarmHandler({ etag: r1.etag });
     assert.equal(r3.unchanged, true);
+    // ...unless the files are asked for, which must still be answered in full.
+    assert.equal((await swarmHandler({ etag: r1.etag, raw: '1' })).unchanged, undefined);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
+test('standalone HTTP shim rejects hostile Host and cross-origin requests', async () => {
+  const { SidecarApp, Response } = await import('../sidecar_ui/sidecar_sdk/index.mjs');
+  const app = new SidecarApp();
+  app.api('/private', () => ({ secret: 'snapshot' }));
+  app.api('/page', () => new Response('page'));
+  const server = app.run(0);
+  try {
+    await new Promise((resolve) => server.once('listening', resolve));
+    const port = server.address().port;
+    const getStatus = (headers) => new Promise((resolve, reject) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path: '/private', headers }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(await getStatus({ Host: 'evil.example' }), 403);
+    assert.equal(await getStatus({ Host: `127.0.0.1:${port}`, Origin: 'https://evil.example' }), 403);
+    const local = await fetch(`http://127.0.0.1:${port}/private`);
+    assert.equal(local.status, 200);
+  } finally {
+    server.close();
+  }
+});
+
 test('channels.mjs parses mentions, channel mentions, and member visibility', async () => {
-  const { channelMentions, mentionsOf, memberView, channelRegistry } = await import(
+  const { activeAt, channelMentions, mentionsOf, memberView, channelRegistry } = await import(
     '../sidecar_ui/channels.mjs'
   );
 
@@ -108,6 +163,34 @@ test('channels.mjs parses mentions, channel mentions, and member visibility', as
   const reg = channelRegistry(msgs);
   assert.equal(reg.length, 1);
   assert.equal(reg[0].name, 'backend');
+  const recreated = channelRegistry([
+    { seq: 1, agent: 'coordinator', control: { op: 'create', channel: 'archive-me', topic: 'old' } },
+    { seq: 2, agent: 'coordinator', control: { op: 'archive', channel: 'archive-me' } },
+    { seq: 3, agent: 'worker', control: { op: 'create', channel: 'archive-me', topic: 'new' } },
+  ]);
+  assert.deepEqual(recreated, [{ name: 'archive-me', topic: 'new', created_by: 'worker', archived: false }]);
+
+  // A re-created channel is active again from its latest create, and it was
+  // active in its first window too: the controls are replayed in order rather
+  // than collapsed to the first create and the last archive.
+  const windows = [
+    { seq: 1, agent: 'coordinator', control: { op: 'create', channel: 'flip', topic: 'v1' } },
+    { seq: 2, agent: 'api', text: 'first window' },
+    { seq: 3, agent: 'coordinator', control: { op: 'archive', channel: 'flip' } },
+    { seq: 4, agent: 'api', text: 'between windows' },
+    { seq: 5, agent: 'coordinator', control: { op: 'create', channel: 'flip', topic: 'v2' } },
+  ];
+  const flip = channelRegistry(windows);
+  assert.deepEqual(flip, [{ name: 'flip', topic: 'v2', created_by: 'coordinator', archived: false }]);
+  const active = activeAt(flip, windows);
+  assert.deepEqual(windows.map((_, i) => active[i]('flip')), [true, true, false, false, true]);
+  // Archive at #3 counts from its own message; a channel archived at the head
+  // (never re-created) is active only before it.
+  const archivedOnly = channelRegistry(windows.slice(0, 3));
+  assert.deepEqual(
+    windows.slice(0, 3).map((_, i) => activeAt(archivedOnly, windows.slice(0, 3))[i]('flip')),
+    [true, true, false],
+  );
 
   const uiView = memberView('ui', 'worker', [], msgs, reg);
   assert.deepEqual(uiView.visible, [true, false, true]);

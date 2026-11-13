@@ -109,9 +109,12 @@ function readUrlHosts(path) {
 // Opened standalone, it reads every ~/.gemini/<product> dir that has a brain/.
 // ---------------------------------------------------------------------------
 
+let appDataDirsCache = null;
 function findAppDataDirs() {
   const directSwarmDir = process.env.POLYTOKEN_SWARM_DIR || join(process.cwd(), '.swarm', 'default');
   const directDirs = existsSync(join(directSwarmDir, 'members.json')) ? [directSwarmDir] : [];
+  if (process.env.POLYTOKEN_SWARM_DIR) return directDirs;
+  if (appDataDirsCache) return [...directDirs, ...appDataDirsCache];
   const dataDir = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR;
   if (dataDir) {
     // <appData>/sidecar_data/<plugin>/<sidecar>/data. Until a fresh app data
@@ -119,13 +122,16 @@ function findAppDataDirs() {
     for (let d = dataDir; d !== dirname(d); d = dirname(d)) {
       if (basename(d) !== 'sidecar_data') continue;
       const appData = dirname(d);
-      return existsSync(join(appData, 'brain')) ? [...directDirs, appData] : directDirs;
+      appDataDirsCache = existsSync(join(appData, 'brain')) ? [appData] : [];
+      return [...directDirs, ...appDataDirsCache];
     }
+    appDataDirsCache = [];
     return directDirs;
   }
   const root = join(homedir(), '.gemini');
   const dirs = safeReaddir(root).sort().map((name) => join(root, name));
-  return [...directDirs, ...dirs.filter((c) => existsSync(join(c, 'brain')))];
+  appDataDirsCache = dirs.filter((c) => existsSync(join(c, 'brain')));
+  return [...directDirs, ...appDataDirsCache];
 }
 
 // Re-evaluated on every use (a few stats): a fresh app data dir may get its
@@ -499,17 +505,17 @@ function turnEnded(lines) {
   return false;
 }
 
-// A member's state, as `manage_swarm status` reports it (board.StateOf):
-// waiting when its own run has stopped, working when it is mid-turn. The
-// roster's wake_mode is not the state: a member parked by swarm_wait and then
-// woken by something other than a board post (a background task, a subagent,
-// the user) is working while wake_mode still says `mentions`; and a member a
-// post has rung (wake_mode `working`) is still waiting until its run resumes.
-// Without a transcript to go on, fall back to wake_mode.
-function statusOf(m, tr) {
-  if (m.killed) return 'killed';
-  if (typeof tr?.idle === 'boolean') return tr.idle ? 'waiting' : 'working';
-  if (m.wake_mode === 'mentions' || m.wake_mode === 'anything') return 'waiting';
+// A member's state from the roster alone, since a native swarm has no
+// transcript to judge a run by. `killed` is the roster's own flag; a member
+// parked in swarm_wait records `wait_since`; the native harness binds a member
+// to a job and reports its state (running / done / failed), so a finished or
+// failed run is waiting, not working. `wake_mode` is the wake policy and never
+// establishes current activity.
+function statusOf(m) {
+  if (m.killed || m.phase === 'KILLED' || m.desired_state === 'KILLED') return 'killed';
+  if (Number(m.wait_since) > 0) return 'waiting';
+  const state = String(m.state ?? m.phase ?? '').toLowerCase();
+  if (state === 'done' || state === 'failed') return 'waiting';
   return 'working';
 }
 
@@ -664,15 +670,16 @@ function readView(appData, id, dir, narrator) {
       // Whether the narrator has written anything (view.json or view.html).
       // Without either, the UI shows no Overview at all.
       exists: jf.size >= 0 || hf.size >= 0,
-      dir: vdir,
+      // Where the files were read from: `swarm` (the swarm dir) or `narrator`
+      // (its own swarm_view dir). The directory itself is not sent.
       source,
       json,
       jsonMtime: mtime,
       jsonError: error,
       html: htmlError ? null : hf.text,
-      // Changes exactly when view.html does, so the UI rebuilds the frame
-      // only then.
-      htmlKey: hf.size < 0 ? '' : `${vdir}|${hf.mtime}:${hf.size}`,
+      // Changes exactly when view.html (or the dir it is read from) does, so
+      // the UI rebuilds the frame only then.
+      htmlKey: hf.size < 0 ? '' : `${source}|${hf.mtime}:${hf.size}`,
       htmlMtime: hf.size < 0 ? 0 : hf.mtime,
       htmlError,
     },
@@ -871,7 +878,7 @@ function buildSnapshot(appData, id, dir, { roster, msgs, sourceKey, raw, remote 
       model: memberModelLabel(m, sessionModel),
       role,
       wake_mode: m.wake_mode || '',
-      status: remote ? remoteStatusOf(m, tr) : statusOf(m, tr),
+      status: remote ? remoteStatusOf(m) : statusOf(m),
       wait_since: Number(m.wait_since) || 0,
       last_read_seq: last,
       unread,
@@ -898,8 +905,6 @@ function buildSnapshot(appData, id, dir, { roster, msgs, sourceKey, raw, remote 
   return {
     id,
     title,
-    appData,
-    dir,
     etag,
     head,
     members,
@@ -925,6 +930,8 @@ function buildSnapshot(appData, id, dir, { roster, msgs, sourceKey, raw, remote 
     allowedFiles,
     urlHosts: URL_HOSTS,
     systemAttention: systemAttention(members, now),
+    // The files themselves: the route sends this only when the client asks
+    // (?raw=1), so a poll no longer carries the board twice.
     raw: { ...raw, view: vf.rawJson },
     ...(remote ? { source: remote.source } : {}),
   };
@@ -1298,12 +1305,10 @@ function ownerOf(m) {
   return { label, kind: m.owner_kind === 'AGENT' ? 'AGENT' : m.owner_kind === 'HUMAN' ? 'HUMAN' : '' };
 }
 
-// A remote member's state. There is no presence: a member on this host is
-// judged from its transcript, one on another LS from its wake mode (the
-// pane shows when it was last seen instead).
-function remoteStatusOf(m, tr) {
-  if (m.killed) return 'killed';
-  return statusOf(m, tr);
+// A remote member's state comes from its roster row like a local one's; there
+// is no presence, so the pane shows when it was last seen instead.
+function remoteStatusOf(m) {
+  return statusOf(m);
 }
 
 // When a member on another LS was last seen: its row's last write
@@ -1362,7 +1367,14 @@ const app = new SidecarApp();
 app.page('/', () => readFileSync(join(__dirname, 'index.html'), 'utf-8'));
 
 for (const [route, [file, type]] of Object.entries(STATIC)) {
-  app.api(route, () => new Response(readFileSync(join(__dirname, file), 'utf-8'), { contentType: type }), 'GET');
+  app.api(route, () => {
+    try {
+      return new Response(readFileSync(join(__dirname, file), 'utf-8'), { contentType: type });
+    } catch (err) {
+      console.error(`[swarm_board] failed to read ${file}:`, err);
+      return new Response('Not found', { status: 404 });
+    }
+  }, 'GET');
 }
 
 // Progress reel frames: images the narrator listed in view.json `reel.frames`
@@ -1431,10 +1443,21 @@ app.api('/api/swarm', (data) => {
   const { appData, swarm, member, remote } = resolve(conv);
   if (!swarm) return { conversationId: conv, swarm: null, member: null };
   const snap = remote ? remoteSnapshot(appData, swarm, remote) : snapshot(appData, swarm);
+  const { raw, ...snapFields } = snap;
   // Who "you" are is part of the response, so it is part of the etag.
   const etag = `${swarm}|${member || ''}|${snap.etag}`;
-  if (data.etag && data.etag === etag) return { conversationId: conv, swarm, member, unchanged: true, etag };
-  return { conversationId: conv, swarm, member, ...snap, ...unseenBy(snap, member), etag };
+  // The Raw tab asks for the files explicitly; nothing else pays for them.
+  const wantsRaw = data.raw === '1';
+  if (!wantsRaw && data.etag && data.etag === etag) return { conversationId: conv, swarm, member, unchanged: true, etag };
+  return {
+    conversationId: conv,
+    swarm,
+    member,
+    ...snapFields,
+    ...unseenBy(snap, member),
+    ...(wantsRaw ? { raw } : {}),
+    etag,
+  };
 }, 'GET');
 
 // With channels, the seqs of the snapshot's messages that member does not

@@ -152,26 +152,35 @@ export function mentionsIn(text, name, set, active) {
 // board.ActiveAt: for each of msgs (ascending, ending at the head), the
 // active test as of that message, from the registry at the head
 // ([{name, archived}]) and the create/archive controls in msgs: a channel
-// counts from its create on, an archived one only before its archive. Null
-// entries when there is no registry.
+// counts from its create on, an archived one only before its archive. A
+// channel created again after its archive is active again from the latest
+// create (the board reactivates it), so the controls are replayed in order
+// rather than collapsed to the first create and the last archive.
+// Null entries when there is no registry.
 export function activeAt(registry, msgs) {
   const reg = new Map((Array.isArray(registry) ? registry : []).map((c) => [c.name, c]));
   if (!reg.size) return msgs.map(() => null);
-  const created = new Map();
-  const archived = new Map();
+  const controls = new Map(); // channel -> [{seq, archived}] in log order
   for (const m of msgs) {
     const c = controlOf(m);
-    if (c?.op === 'create') created.set(c.channel, Number(m.seq) || 0);
-    if (c?.op === 'archive') archived.set(c.channel, Number(m.seq) || 0);
+    if ((c?.op !== 'create' && c?.op !== 'archive') || typeof c.channel !== 'string' || !c.channel) continue;
+    const list = controls.get(c.channel) || [];
+    list.push({ seq: Number(m.seq) || 0, archived: c.op === 'archive' });
+    controls.set(c.channel, list);
   }
   return msgs.map((m) => {
     const seq = Number(m.seq) || 0;
     return (c) => {
       const ch = reg.get(c);
       if (!ch) return false;
-      if (created.has(c) && seq < created.get(c)) return false;
-      if (ch.archived) return archived.has(c) && seq < archived.get(c);
-      return true;
+      // The state in force at this message: a control counts from its own seq
+      // (a create shows the channel, an archive hides it, on that message).
+      let state = null; // null: no control in view, so the head state applies
+      for (const e of controls.get(c) || []) {
+        if (e.seq > seq) break;
+        state = e.archived;
+      }
+      return state === null ? !ch.archived : !state;
     };
   });
 }
@@ -208,7 +217,7 @@ export function channelRegistry(msgs) {
   for (const m of msgs) {
     const c = controlOf(m);
     if (!c || typeof c.channel !== 'string' || !c.channel) continue;
-    if (c.op === 'create' && !byName.has(c.channel)) {
+    if (c.op === 'create' && (!byName.has(c.channel) || byName.get(c.channel).archived)) {
       byName.set(c.channel, { name: c.channel, topic: typeof c.topic === 'string' ? c.topic : '', created_by: String(m.agent ?? ''), archived: false });
     } else if (c.op === 'archive') {
       const e = byName.get(c.channel) || { name: c.channel, topic: '', created_by: '', archived: false };

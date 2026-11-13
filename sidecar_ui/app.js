@@ -367,7 +367,11 @@
         state.conv = conv;
         resetSwarm(null);
       }
-      const q = new URLSearchParams({etag: state.etag});
+      // The Raw tab is the only consumer of the file contents; every other
+      // view polls with the etag instead of receiving the board twice.
+      const q = new URLSearchParams();
+      if (state.tab === 'raw') q.set('raw', '1');
+      else q.set('etag', state.etag);
       if (conv) q.set('conversationId', conv);
       const r = await getJson(`/api/swarm?${q}`);
       state.lastOk = Date.now();
@@ -381,12 +385,13 @@
       if (r.swarm !== state.swarm) resetSwarm(r.swarm);
       state.me = r.member || null;
       if (!r.unchanged) {
-        state.etag = r.etag;
         ingest(r);
+        state.etag = r.etag;
       }
       showView('board');
     } catch (e) {
       console.warn(e);
+      state.lastOk = 0;
     } finally {
       setLive(Date.now() - state.lastOk <= POLL_MS * 4);
       setTimeout(poll, delay);

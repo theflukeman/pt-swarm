@@ -38,7 +38,23 @@ export class SidecarApp {
   run(port = Number(process.env.PORT || 5388)) {
     const server = http.createServer(async (req, res) => {
       try {
-        const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+        const host = req.headers.host || '';
+        if (!/^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d{1,5})?$/i.test(host)) {
+          res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Forbidden');
+          return;
+        }
+        const origin = req.headers.origin;
+        if (origin) {
+          let originHost = '';
+          try { originHost = new URL(origin).host; } catch {}
+          if (originHost.toLowerCase() !== host.toLowerCase()) {
+            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('Forbidden');
+            return;
+          }
+        }
+        const parsedUrl = new URL(req.url || '/', `http://${host}`);
         const key = `${(req.method || 'GET').toUpperCase()}:${parsedUrl.pathname}`;
         const handler = this.routes.get(key);
 
@@ -62,12 +78,15 @@ export class SidecarApp {
           res.end(JSON.stringify(out));
         }
       } catch (err) {
+        console.error('[swarm_board] request failed:', err);
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: String(err?.message || err) }));
+        res.end(JSON.stringify({ error: 'Internal server error' }));
       }
     });
 
-    const host = process.env.HOST || '127.0.0.1';
+    const requestedHost = process.env.HOST || '127.0.0.1';
+    const host = /^(?:localhost|127(?:\.\d{1,3}){3}|::1)$/i.test(requestedHost) ? requestedHost : '127.0.0.1';
+    if (host !== requestedHost) console.warn('[swarm_board] ignoring non-loopback HOST override');
     server.listen(port, host, () => {
       console.log(`[swarm_board] Live UI listening at http://${host}:${port}/`);
     });
