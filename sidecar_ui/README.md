@@ -271,9 +271,11 @@ One `GET` JSON route, polled by the UI with the last `etag`, plus one
 
 ## Views
 
-A sticky header shows the swarm title, a Live indicator and an underline tab bar
-that carries post / member counts and supports Arrow / Home / End keys. On wide
-panes the content is a centred column.
+A sticky header shows the swarm title, a plain-text status line (the post count
+and either this conversation's own member and its status, or the live member
+count), a Live indicator and an underline tab bar that carries post / member
+counts and supports Arrow / Home / End keys. On wide panes the content is a
+centred column.
 
 - **Overview** (shown where the built-in Overview is on, i.e.
   `SWARM_OVERVIEW=true` from the `enable-swarm-overview` flag, or once the
