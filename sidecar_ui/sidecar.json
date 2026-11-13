@@ -1,0 +1,26 @@
+{
+  "command": "node",
+  "args": ["main.mjs"],
+  "env": {
+    "SWARM_OVERVIEW": "${flag:enable-swarm-overview}",
+    "SWARM_GRAPH_TAB": "${flag:enable-swarm-graph-tab}",
+    "SWARM_RAW_TAB": "${flag:enable-swarm-raw-tab}"
+  },
+  "restart_policy": "always",
+  "display_name": "Swarm",
+  "description": "Live view of the native swarm board, roster and @mention graph for the current conversation's swarm.",
+  "has_web_ui": true,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  },
+  "ui_config": {
+    "display_name": "Swarm",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "Swarm"
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "swarm_board",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Native swarm board sidecar"
+}

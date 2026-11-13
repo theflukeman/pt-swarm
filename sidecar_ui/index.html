@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- No frame may navigate anywhere: blocks the narrator frame from
+       navigating itself (its srcdoc load is exempt). See app.js. -->
+  <meta http-equiv="Content-Security-Policy" content="frame-src 'none'; child-src 'none'">
+  <title>Swarm</title>
+  <!-- No /preload.js here: the standalone sidecar shim does not inject host
+       theme tokens, and app.js falls back to its default palette without them. -->
+  <!-- Google Sans Flex (the Hub's UI face, same axes as the Hub) and Google Sans Code. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=Google+Sans+Flex:ROND,opsz,slnt,wdth,wght@0..100,6..144,-10..0,92..100,100..1000&family=Google+Sans+Code:ital,wght@0,300..800;1,300..800&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/hive.css">
+</head>
+<body>
+  <!-- Loading: a skeleton of the board, so the pane never flashes empty. -->
+  <div id="loading" class="loading" data-testid="swarm-loading" aria-live="polite" aria-busy="true">
+    <div class="skel-header">
+      <span class="skel skel-line" style="width: 46%; height: 12px"></span>
+      <span class="skel skel-line" style="width: 28%"></span>
+    </div>
+    <div class="skel-tabs">
+      <span class="skel skel-tab"></span><span class="skel skel-tab"></span><span class="skel skel-tab"></span><span class="skel skel-tab"></span>
+    </div>
+    <div class="skel-rows" aria-hidden="true">
+      <div class="skel-stack"><span class="skel skel-line" style="width: 22%"></span><span class="skel skel-line" style="width: 88%"></span><span class="skel skel-line" style="width: 62%"></span></div>
+      <div class="skel-stack"><span class="skel skel-line" style="width: 18%"></span><span class="skel skel-line" style="width: 74%"></span></div>
+      <div class="skel-stack"><span class="skel skel-line" style="width: 26%"></span><span class="skel skel-line" style="width: 92%"></span><span class="skel skel-line" style="width: 48%"></span></div>
+    </div>
+    <p class="loading-caption">Looking for this conversation's swarm…</p>
+  </div>
+
+  <div id="board" class="board hidden" data-testid="swarm-board">
+    <header class="header">
+      <div class="header-row">
+        <h1 id="swarm-title" class="swarm-title" data-testid="swarm-title"></h1>
+        <span id="live" class="live" role="status" title="Updates automatically" data-testid="swarm-live">
+          <span class="live-dot" aria-hidden="true"></span><span id="live-label" class="live-label">Live</span>
+        </span>
+      </div>
+      <div id="swarm-meta" class="meta hidden" data-testid="swarm-meta"></div>
+      <nav class="tabs" role="tablist" aria-label="Swarm views" data-testid="swarm-tabs">
+        <button type="button" role="tab" id="tabbtn-overview" aria-controls="tab-overview" aria-selected="false" tabindex="-1" data-tab="overview" class="tab hidden" data-testid="swarm-tab-overview">Overview<span id="tab-badge-overview" class="tab-badge hidden" data-testid="swarm-tab-badge-overview"></span></button>
+        <button type="button" role="tab" id="tabbtn-feed" aria-controls="tab-feed" aria-selected="true" data-tab="feed" class="tab active" data-testid="swarm-tab-feed">Board<span id="tab-count-feed" class="tab-count" data-testid="swarm-tab-count-feed"></span></button>
+        <button type="button" role="tab" id="tabbtn-members" aria-controls="tab-members" aria-selected="false" tabindex="-1" data-tab="members" class="tab" data-testid="swarm-tab-members">Members<span id="tab-count-members" class="tab-count" data-testid="swarm-tab-count-members"></span></button>
+        <button type="button" role="tab" id="tabbtn-graph" aria-controls="tab-graph" aria-selected="false" tabindex="-1" data-tab="graph" class="tab hidden" data-testid="swarm-tab-graph">Graph</button>
+        <button type="button" role="tab" id="tabbtn-raw" aria-controls="tab-raw" aria-selected="false" tabindex="-1" data-tab="raw" class="tab hidden" data-testid="swarm-tab-raw">Raw</button>
+      </nav>
+    </header>
+
+    <main class="main">
+      <!-- Overview: chrome (trusted, rendered by app.js) around the narrator's
+           view, which runs in a sandboxed frame or as the plain view. Hidden
+           (tab and all) until the swarm has a view.json or view.html. -->
+      <section id="tab-overview" class="tab-body" role="tabpanel" aria-labelledby="tabbtn-overview" data-testid="swarm-overview">
+        <div id="ov-status" class="ov-status" data-testid="swarm-overview-status"></div>
+        <div id="ov-system" class="ov-system hidden" role="list" aria-label="System alerts" data-testid="swarm-overview-system"></div>
+        <div id="ov-notice" class="ov-notice hidden" role="status" data-testid="swarm-overview-notice"></div>
+        <div id="ov-label" class="ov-label hidden" data-testid="swarm-overview-label">
+          <span class="ov-label-text">overview · from the narrator’s notes</span>
+          <span class="spacer"></span>
+          <button id="ov-mode" type="button" class="ghost-btn sm" aria-pressed="false" data-testid="swarm-overview-mode">Narrator’s page</button>
+        </div>
+        <div id="ov-frame" class="ov-frame hidden" data-testid="swarm-overview-frame"></div>
+        <div id="ov-plain" class="ov-plain hidden" data-testid="swarm-overview-plain"></div>
+        <footer id="ov-footer" class="ov-footer hidden" data-testid="swarm-overview-footer">
+          <div class="ov-hint">
+            <span aria-hidden="true">💡</span>
+            <span>Want this view different? Tell the coordinator.</span>
+            <button id="ov-open-coord" type="button" class="link-btn" data-testid="swarm-overview-open-coordinator">Open coordinator chat</button>
+          </div>
+          <div id="ov-ack" class="ov-ack hidden" data-testid="swarm-overview-ack"></div>
+        </footer>
+      </section>
+
+      <!-- Board -->
+      <section id="tab-feed" class="tab-body active" role="tabpanel" aria-labelledby="tabbtn-feed">
+        <div class="toolbar">
+          <div class="searchbar">
+            <label class="search">
+              <svg class="icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/></svg>
+              <input id="f-search" type="search" placeholder="Search" aria-label="Search posts" autocomplete="off" data-testid="swarm-search">
+            </label>
+            <button id="f-toggle" type="button" class="icon-btn filter-toggle" aria-expanded="false" aria-controls="filters" title="Filters" aria-label="Filters" data-testid="swarm-filter-toggle">
+              <svg class="icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M4.5 8h7M6.5 11.5h3"/></svg>
+              <span class="filter-dot" aria-hidden="true"></span>
+            </button>
+          </div>
+          <!-- Channels: shown only once the swarm has a non-main channel. -->
+          <div id="channel-tabs" class="channel-tabs hidden" role="tablist" aria-label="Channels" data-testid="swarm-channel-tabs"></div>
+          <div id="filters" class="filters hidden" data-testid="swarm-filters">
+            <div class="toolbar-row">
+              <span class="select"><select id="f-agent" aria-label="Filter by poster" title="Show posts by one member"><option value="">From anyone</option></select></span>
+              <span class="select"><select id="f-mention" aria-label="Filter by recipient" title="Show posts that call on one member"><option value="">To anyone</option></select></span>
+              <span id="f-channel-wrap" class="select hidden"><select id="f-channel" aria-label="Filter by channel" title="Show posts in one channel" data-testid="swarm-channel-filter"><option value="">All channels</option></select></span>
+              <span class="spacer"></span>
+              <label class="switch" title="Keep the newest post in view">
+                <input type="checkbox" id="f-autoscroll" checked><span class="switch-track" aria-hidden="true"></span><span>Follow</span>
+              </label>
+            </div>
+            <div id="agents" class="agents" data-testid="swarm-agents" role="group" aria-label="Show or hide each member's posts"></div>
+          </div>
+        </div>
+        <div id="feed" class="feed" data-testid="swarm-feed" aria-live="polite" aria-relevant="additions"></div>
+        <button id="jump-latest" type="button" class="jump hidden" data-testid="swarm-jump-latest">
+          <svg class="icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v9.5M4 9l4 4 4-4"/></svg>Latest
+        </button>
+      </section>
+
+      <!-- Members -->
+      <section id="tab-members" class="tab-body" role="tabpanel" aria-labelledby="tabbtn-members">
+        <div id="members" class="members" data-testid="swarm-members" role="list"></div>
+      </section>
+
+      <!-- Graph -->
+      <section id="tab-graph" class="tab-body" role="tabpanel" aria-labelledby="tabbtn-graph">
+        <div class="player">
+          <div class="player-row">
+            <div class="btn-group" role="group" aria-label="Replay">
+              <button id="replay-start" type="button" class="icon-btn" title="Jump to start" aria-label="Jump to start">
+                <svg class="icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3.5v9"/><path class="fill" d="M12.5 3.8v8.4a.4.4 0 0 1-.62.33L6.3 8.33a.4.4 0 0 1 0-.66l5.58-4.2a.4.4 0 0 1 .62.33z"/></svg>
+              </button>
+              <button id="replay-back" type="button" class="icon-btn" title="Previous post (←)" aria-label="Previous post">
+                <svg class="icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg>
+              </button>
+              <button id="replay-play" type="button" class="icon-btn play" title="Play / pause replay (space)" aria-label="Play replay" data-testid="swarm-replay-play"></button>
+              <button id="replay-fwd" type="button" class="icon-btn" title="Next post (→)" aria-label="Next post">
+                <svg class="icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>
+              </button>
+            </div>
+            <input id="replay-slider" class="slider" type="range" min="0" max="0" value="0" aria-label="Replay position" title="Scrub through board posts">
+            <button id="replay-live" type="button" class="pill-btn on" title="Show everything and follow live" aria-pressed="true"><span class="live-dot" aria-hidden="true"></span>Live</button>
+          </div>
+          <div class="player-row sub">
+            <span id="replay-label" class="replay-label"></span>
+            <span class="spacer"></span>
+            <label class="switch" title="Hide killed and inactive members from the graph">
+              <input type="checkbox" id="g-hide-inactive" data-testid="swarm-graph-hide-inactive"><span class="switch-track" aria-hidden="true"></span><span>Hide inactive</span>
+            </label>
+            <label class="switch" title="Draw @all as an edge to every member">
+              <input type="checkbox" id="g-all"><span class="switch-track" aria-hidden="true"></span><span>Expand @all</span>
+            </label>
+            <span class="select sm"><select id="replay-timing" aria-label="Replay pacing" title="Replay pacing">
+              <option value="even">Even pacing</option>
+              <option value="real">Real-time gaps</option>
+            </select></span>
+            <span class="select sm"><select id="replay-speed" aria-label="Replay speed" title="Replay speed">
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+              <option value="8">8×</option>
+            </select></span>
+          </div>
+        </div>
+        <svg id="graph" class="graph" data-testid="swarm-graph" preserveAspectRatio="xMidYMin meet" role="img" aria-label="Who @mentions whom"></svg>
+        <div class="graph-legend" aria-hidden="true">
+          <span class="legend-item"><svg width="22" height="8" viewBox="0 0 24 8"><path d="M1 4h18" class="lg-solid"/><path d="M17 1l5 3-5 3z" class="lg-head"/></svg>@mention, width = count</span>
+          <span class="legend-item"><svg width="22" height="8" viewBox="0 0 24 8"><path d="M1 4h18" class="lg-dash"/><path d="M17 1l5 3-5 3z" class="lg-head"/></svg>via @all</span>
+          <span class="legend-item"><svg width="16" height="10" viewBox="0 0 16 10"><rect x="1" y="1" width="14" height="8" rx="4" class="lg-ring"/></svg>posted with no mention</span>
+          <span class="legend-item"><span class="lg-bcast">@all 2</span>@all posts, drawn by Expand @all</span>
+        </div>
+        <div id="replay-caption" class="msg replay-caption hidden" aria-live="polite"></div>
+      </section>
+
+      <!-- Raw -->
+      <section id="tab-raw" class="tab-body" role="tabpanel" aria-labelledby="tabbtn-raw">
+        <div class="raw-toolbar">
+          <div class="segmented" role="group" aria-label="File">
+            <button type="button" data-raw="members" class="raw-btn on" aria-pressed="true">members.json</button>
+            <button type="button" data-raw="board" class="raw-btn" aria-pressed="false">board.jsonl</button>
+            <button type="button" id="raw-btn-view" data-raw="view" class="raw-btn hidden" aria-pressed="false">view.json</button>
+          </div>
+          <span class="spacer"></span>
+          <button id="raw-copy" type="button" class="ghost-btn" title="Copy to clipboard" data-testid="swarm-raw-copy">
+            <svg class="icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-1.5a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v5A1.5 1.5 0 0 0 4 10.5h1.5"/></svg><span id="raw-copy-label">Copy</span>
+          </button>
+        </div>
+        <div id="raw-meta" class="raw-meta"></div>
+        <pre id="raw" class="raw" data-testid="swarm-raw" tabindex="0"></pre>
+      </section>
+    </main>
+  </div>
+
+  <section id="empty" class="empty hidden" data-testid="swarm-empty-state" aria-labelledby="empty-title">
+    <div class="empty-card">
+      <svg class="empty-icon" width="56" height="56" viewBox="0 0 96 96" aria-hidden="true">
+        <g class="links">
+          <line x1="48" y1="26" x2="25" y2="66"/>
+          <line x1="48" y1="26" x2="71" y2="66"/>
+          <line x1="25" y1="66" x2="71" y2="66"/>
+        </g>
+        <circle class="node" cx="48" cy="26" r="9"/>
+        <circle class="node" cx="25" cy="66" r="8"/>
+        <circle class="node" cx="71" cy="66" r="8"/>
+      </svg>
+      <h2 id="empty-title" class="empty-title" data-testid="swarm-empty-title">No swarm in this conversation</h2>
+      <p id="empty-body" class="empty-body" data-testid="swarm-empty-body"></p>
+      <p class="empty-hint"><span class="live-dot" aria-hidden="true"></span>Watching for a swarm</p>
+    </div>
+  </section>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite" data-testid="swarm-toast"></div>
+
+  <script src="/hive.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

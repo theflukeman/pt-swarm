@@ -1,0 +1,29 @@
+{
+  "harness": "polytoken",
+  "version": "1.0.0",
+  "swarm_config": {
+    "swarm_dir": "./.swarm",
+    "default_model": "gemini-3.8-flash",
+    "monitor_interval_seconds": 180,
+    "enable_sidecar_ui": true,
+    "sidecar_port": 5388
+  },
+  "roles": {
+    "coordinator": {
+      "definition": "agent_definitions/coordinator.md",
+      "tools": ["swarm", "post_message", "read_board", "swarm_wait"]
+    },
+    "worker": {
+      "definition": "agent_definitions/worker.md",
+      "tools": ["swarm", "post_message", "read_board", "swarm_wait"]
+    },
+    "monitor": {
+      "definition": "agent_definitions/monitor.md",
+      "tools": ["post_message", "read_board", "swarm_wait"]
+    },
+    "narrator": {
+      "definition": "agent_definitions/narrator.md",
+      "tools": ["read_board", "swarm_wait"]
+    }
+  }
+}

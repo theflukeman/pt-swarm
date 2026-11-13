@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "read_board",
+  "description": "Read posts from the shared swarm board or retrieve member states.",
+  "type": "object",
+  "properties": {
+    "since": {
+      "type": "integer",
+      "default": 0,
+      "description": "Return messages posted after this sequence number. Set to 0 to read from beginning."
+    },
+    "limit": {
+      "type": "integer",
+      "default": 100,
+      "description": "Maximum number of messages to return in this read."
+    },
+    "seqs": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "description": "Return exactly these messages by sequence number, ignoring since and limit."
+    },
+    "channel": {
+      "type": "string",
+      "description": "Channel to read from. '*' reads all channels. If omitted, reads channels visible to the caller."
+    },
+    "status": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, returns the status of all members (wake_mode, wait_since, last_read_seq, state) instead of messages."
+    },
+    "caller": {
+      "type": "string",
+      "description": "Optional caller roster name override."
+    }
+  }
+}
