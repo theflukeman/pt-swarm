@@ -387,6 +387,15 @@ class TestBoardManagerReviewRegressions(unittest.TestCase):
         self.assertEqual(following["seq"], acknowledged["seq"] + 1)
         self.assertEqual([m["text"] for m in self.bm.read_raw_messages()], ["persisted", "next"])
 
+    def test_stale_sequence_marker_does_not_block_posting(self):
+        self.bm.post_message("coordinator", "one")
+        # Older builds wrote a literal backslash-n into the marker file, and the
+        # file outlives the fix, so a stale marker must not poison every post.
+        self.bm.sequence_file.write_bytes(b"1\\n")
+        posted = self.bm.post_message("coordinator", "after stale marker")
+        self.assertEqual(posted["seq"], 2)
+        self.assertEqual(self.bm.sequence_file.read_bytes(), b"2\n")
+
     def test_post_validates_roster_before_appending(self):
         self.bm.members_file.write_text('{"members":', encoding="utf-8")
         board_before = self.bm.board_file.read_bytes()

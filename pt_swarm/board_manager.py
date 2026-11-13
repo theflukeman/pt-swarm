@@ -176,9 +176,7 @@ class BoardManager:
             if not self.board_file.exists():
                 self.board_file.touch()
             if not self.sequence_file.exists():
-                messages = self.read_raw_messages()
-                high_water = max((int(m.get("seq", 0)) for m in messages), default=0)
-                self._write_sequence_high_water(high_water)
+                self._write_sequence_high_water(self._read_sequence_high_water())
 
     def sync_session_models(self) -> None:
         """Re-resolve `session` requests against the model this session is running.
@@ -232,13 +230,30 @@ class BoardManager:
                     pass
             raise
 
+    def _board_high_water(self) -> int:
+        return max((int(m.get("seq", 0)) for m in self.read_raw_messages()), default=0)
+
     def _read_sequence_high_water(self) -> int:
         try:
-            value = int(self.sequence_file.read_text(encoding="ascii").strip())
+            raw = self.sequence_file.read_text(encoding="ascii", errors="replace").strip()
         except FileNotFoundError:
-            return max((int(m.get("seq", 0)) for m in self.read_raw_messages()), default=0)
+            return self._board_high_water()
+        try:
+            value = int(raw)
+        except ValueError:
+            # The marker is derived state: recover from a stale, torn or
+            # differently-escaped value instead of failing every post.
+            print(
+                f"Ignoring unreadable sequence high-water mark {raw!r} in {self.sequence_file}",
+                file=sys.stderr,
+            )
+            return self._board_high_water()
         if value < 0:
-            raise ValueError("sequence high-water mark must be non-negative")
+            print(
+                f"Ignoring negative sequence high-water mark {value} in {self.sequence_file}",
+                file=sys.stderr,
+            )
+            return self._board_high_water()
         return value
 
     def _write_sequence_high_water(self, value: int) -> None:
@@ -383,7 +398,7 @@ class BoardManager:
             members_data = self.read_members()
             members_map = members_data.get("members", {})
             messages = self.read_raw_messages()
-            high_water = max(self._read_sequence_high_water(), max((int(m.get("seq", 0)) for m in messages), default=0))
+            high_water = max(self._read_sequence_high_water(), self._board_high_water())
             next_seq = high_water + 1
 
             # Preserve a complete final JSON record even when it lacks its line
