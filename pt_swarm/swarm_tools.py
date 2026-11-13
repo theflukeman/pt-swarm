@@ -102,10 +102,10 @@ class SwarmToolHandlers:
             for member_name, member in (members_info.get("members") or {}).items():
                 entry = dict(member)
                 if entry.get("phase", "").lower() == "running" and not entry.get("killed"):
-                    if self.worker_runner is not None and member_name not in ("coordinator", "monitor", "narrator"):
-                        entry["liveness"] = "running" if self.worker_runner.is_running(member_name) else "not_running"
-                    elif entry.get("job_id"):
+                    if entry.get("execution_mode") in ("delegated", "bound") or entry.get("job_id"):
                         entry["liveness"] = "unverified"
+                    elif self.worker_runner is not None and member_name not in ("coordinator", "monitor", "narrator"):
+                        entry["liveness"] = "running" if self.worker_runner.is_running(member_name) else "not_running"
                 roster[member_name] = entry
             res: Dict[str, Any] = {
                 "status": "ok",
@@ -242,72 +242,59 @@ class SwarmToolHandlers:
             if (isinstance(tasks, list) and len(tasks) > 0) or n_copies > 1:
                 count = len(tasks) if (isinstance(tasks, list) and len(tasks) > 0) else n_copies
                 shard_names = [f"{base_name}-{idx}" for idx in range(1, count + 1)]
+                invalid = next((n for n in shard_names if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", n)), None)
+                if invalid:
+                    return {"error": f"Invalid generated member name '{invalid}'"}
+                shard_briefs = [
+                    f"{brief}\n\nYour assigned slice ({idx}/{count}): {tasks[idx - 1]}"
+                    if isinstance(tasks, list) and idx <= len(tasks) else brief
+                    for idx in range(1, count + 1)
+                ]
+                # Reserve the complete name set and create every roster entry while
+                # holding the board lock; another add cannot interleave preflight.
                 with self.bm.lock:
                     members = self.bm.read_members().get("members", {})
                     conflict = next((n for n in shard_names if n in members), None)
-                if conflict:
-                    return {"error": f"Member '{conflict}' already exists or was killed"}
-                added_members = []
-                brief_seqs = []
-                shard_briefs = []
-                for idx in range(1, count + 1):
-                    shard_name = f"{base_name}-{idx}"
-                    shard_brief = (
-                        f"{brief}\n\nYour assigned slice ({idx}/{count}): {tasks[idx - 1]}"
-                        if isinstance(tasks, list) and idx <= len(tasks)
-                        else brief
-                    )
+                    if conflict:
+                        return {"error": f"Member '{conflict}' already exists or was killed"}
+                    entries = []
                     try:
-                        m_entry = self.bm.add_member(
-                            name=shard_name,
-                            model=model,
-                            workspace_mode=workspace_mode,
-                            channels=channels,
-                            fork=fork,
-                            phase="RUNNING" if has_spawner else "delegated",
-                        )
+                        for shard_name in shard_names:
+                            entries.append(self.bm.add_member(
+                                name=shard_name, model=model, workspace_mode=workspace_mode,
+                                channels=channels, fork=fork,
+                                phase="RUNNING" if has_spawner else "delegated",
+                            ))
                     except ValueError as e:
-                        return {"error": str(e), "members": added_members, "brief_seqs": brief_seqs}
-                    post = self.bm.post_message(
-                        agent=caller,
-                        text=f"@{shard_name} {shard_brief}",
-                        channel=post_channel,
-                        kind="brief",
-                    )
-                    if has_spawner:
-                        self.worker_runner.spawn_or_wake(
-                            name=shard_name,
-                            prompt_text=shard_brief,
-                            brief_seq=post["seq"],
-                            model=model,
-                            workspace_mode=workspace_mode,
-                            role=m_entry.get("role", "worker"),
-                        )
+                        return {"error": str(e), "members": [], "brief_seqs": []}
+                added_members, brief_seqs, shard_results, delegations = [], [], [], []
+                for shard_name, shard_brief, m_entry in zip(shard_names, shard_briefs, entries):
+                    post = None
+                    result = {"spawned": False, "mode": "delegated"}
+                    try:
+                        post = self.bm.post_message(agent=caller, text=f"@{shard_name} {shard_brief}", channel=post_channel, kind="brief")
+                        if has_spawner:
+                            result = self.worker_runner.spawn_or_wake(
+                                name=shard_name, prompt_text=shard_brief, brief_seq=post["seq"],
+                                model=model, workspace_mode=workspace_mode, role=m_entry.get("role", "worker"),
+                            )
+                        else:
+                            delegations.append({"subagent_type": "swarm-worker", "name": shard_name,
+                                "prompt": WorkerProcessManager.initial_input(shard_name, shard_brief, post["seq"])})
+                    except Exception as e:
+                        result = {"spawned": False, "error": str(e), "mode": "error"}
                     added_members.append(shard_name)
-                    brief_seqs.append(post["seq"])
-                    shard_briefs.append(shard_brief)
-
+                    brief_seqs.append(post["seq"] if post else None)
+                    shard_results.append({"name": shard_name, "brief_seq": post["seq"] if post else None,
+                                          "prompt": shard_brief, "process": result})
                 return {
-                    "status": "added",
-                    "name": base_name,
-                    "members": added_members,
-                    "model": m_entry["desired_model"],
-                    "applied_model": m_entry["applied_model"],
+                    "status": "added", "name": base_name, "members": added_members,
+                    "model": entries[0]["desired_model"], "applied_model": entries[0]["applied_model"],
                     "brief_seqs": brief_seqs,
-                    "spawned": has_spawner,
+                    "spawned": bool(has_spawner and shard_results and all(x["process"].get("spawned") for x in shard_results)),
                     "mode": "external" if has_spawner else "delegated",
-                    "delegations": [
-                        {
-                            "subagent_type": "swarm-worker",
-                            "name": shard_name,
-                            "prompt": WorkerProcessManager.initial_input(shard_name, shard_brief, seq),
-                        }
-                        for shard_name, shard_brief, seq in zip(added_members, shard_briefs, brief_seqs)
-                    ] if not has_spawner else [],
-                    "note": (
-                        f"Added {len(added_members)} workers ({added_members[0]}..{added_members[-1]}). "
-                        f"Briefs posted as #{brief_seqs[0]}..#{brief_seqs[-1]}."
-                    ),
+                    "results": shard_results, "delegations": delegations,
+                    "note": f"Added {len(added_members)} workers; see per-worker results.",
                 }
 
             # Single worker add
@@ -374,10 +361,11 @@ class SwarmToolHandlers:
 
             outcomes = {}
             for k_name in killed_list:
-                if self.worker_runner is None:
-                    outcomes[k_name] = True
+                member = members_before.get(k_name, {})
+                if self.worker_runner is None or member.get("execution_mode") in ("delegated", "bound"):
+                    outcomes[k_name] = False
                 else:
-                    ws_mode = members_before.get(k_name, {}).get("workspace_mode", "inherit")
+                    ws_mode = member.get("workspace_mode", "inherit")
                     outcomes[k_name] = bool(
                         self.worker_runner.kill_worker(k_name, workspace_mode=ws_mode)
                     )

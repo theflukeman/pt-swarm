@@ -198,7 +198,15 @@ class WorkerProcessManager:
             "start": _process_start_marker(pid),
             "workspace_mode": workspace_mode,
         }
-        self._pid_file(name).write_text(json.dumps(payload), encoding="utf-8")
+        # Publish a complete record in one filesystem operation so concurrent
+        # managers never observe a truncated PID entry.
+        target = self._pid_file(name)
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            temporary.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def is_running(self, name: str) -> bool:
         with self._lock:
@@ -219,7 +227,8 @@ class WorkerProcessManager:
                             return True
                     elif recorded_start is None or not current_start or recorded_start == current_start:
                         return True
-                self._pid_file(name).unlink(missing_ok=True)
+                # A liveness probe is observational only: another process may
+                # have atomically replaced this entry with a new worker's PID.
             return False
 
     def spawn_or_wake(

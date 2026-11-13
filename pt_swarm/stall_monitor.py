@@ -71,19 +71,23 @@ class SwarmStallMonitor:
         }
         if not live_workers:
             return
-        any_working = any(
-            m.get("wake_mode") == "working"
-            and (self.worker_runner is None or self.worker_runner.is_running(name))
-            for name, m in live_workers.items()
-        )
+        def reported_active(name, member):
+            if member.get("execution_mode") in ("delegated", "bound"):
+                return member.get("wake_mode") == "working" or member.get("state") == "running"
+            return member.get("wake_mode") == "working" and (
+                self.worker_runner is None or self.worker_runner.is_running(name)
+            )
+
+        any_working = any(reported_active(name, member) for name, member in live_workers.items())
         if any_working:
             return  # Normal active computation, not a stall
 
         # 3. Check if all live members are parked
         parked_modes = {"mentions", "anything"}
         all_parked = all(
-            m.get("wake_mode") in parked_modes
-            or (self.worker_runner is not None and not self.worker_runner.is_running(name))
+            (m.get("wake_mode") in parked_modes if m.get("execution_mode") in ("delegated", "bound")
+             else m.get("wake_mode") in parked_modes
+             or (self.worker_runner is not None and not self.worker_runner.is_running(name)))
             for name, m in live_workers.items()
         )
         if not all_parked:
