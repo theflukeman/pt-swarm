@@ -61,6 +61,18 @@ def _process_start_marker(pid: int) -> Optional[str]:
     return fields[19] if len(fields) >= 20 else None
 
 
+def _process_state(pid: int) -> Optional[str]:
+    """Return Linux process state from /proc, including zombie state."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    fields = stat.rsplit(")", 1)[-1].split()
+    return fields[0] if fields else None
+
+
 class WorkerProcessManager:
     def __init__(
         self,
@@ -85,7 +97,10 @@ class WorkerProcessManager:
         self.in_process_spawner = in_process_spawner
         self.spawn_grace_seconds = spawn_grace_seconds
         self._processes: Dict[str, subprocess.Popen] = {}
+        self._log_handles: Dict[str, Any] = {}
+        self._workspace_modes: Dict[str, str] = {}
         self._lock = threading.RLock()
+        self._spawn_lock = threading.Lock()
 
     @staticmethod
     def _resolve_default_cmd() -> Optional[List[str]]:
@@ -182,7 +197,12 @@ class WorkerProcessManager:
                 pid, recorded_start = entry
                 if _is_pid_alive(pid):
                     current_start = _process_start_marker(pid)
-                    if not recorded_start or not current_start or recorded_start == current_start:
+                    state = _process_state(pid)
+                    # Linux workers must have a verifiable marker and not be zombies.
+                    if sys.platform.startswith("linux"):
+                        if recorded_start and current_start == recorded_start and state != "Z":
+                            return True
+                    elif recorded_start is None or not current_start or recorded_start == current_start:
                         return True
                 self._pid_file(name).unlink(missing_ok=True)
             return False
@@ -196,11 +216,16 @@ class WorkerProcessManager:
         workspace_mode: str = "inherit",
         role: str = "worker",
     ) -> Dict[str, Any]:
-        with self._lock:
-            if self.is_running(name):
-                return {"spawned": False, "status": "already_running", "name": name}
-
-            work_dir = self.workspace_manager.provision_workspace(name, mode=workspace_mode)
+        with self._spawn_lock:
+            with self._lock:
+                if self.is_running(name):
+                    return {"spawned": False, "status": "already_running", "name": name}
+            try:
+                work_dir = self.workspace_manager.provision_workspace(name, mode=workspace_mode)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return {"spawned": False, "mode": "workspace_error", "name": name, "error": str(exc)}
+            with self._lock:
+                self._workspace_modes[name] = workspace_mode
             initial_input = self.initial_input(name, prompt_text, brief_seq)
 
             # The roster's model field is a request, not a selector: `default` is the
@@ -244,7 +269,6 @@ class WorkerProcessManager:
             env["POLYTOKEN_AGENT_NAME"] = name
             env["POLYTOKEN_AGENT_ROLE"] = role
             env["POLYTOKEN_SWARM_DIR"] = str(self.swarm_dir)
-            env["POLYTOKEN_INITIAL_PROMPT"] = initial_input
 
             # The model travels on the command line: `polytoken` has no POLYTOKEN_MODEL
             # variable, and `exec --model` is the only way to pin a worker's model.
@@ -270,18 +294,28 @@ class WorkerProcessManager:
                     stdout=log_fh,
                     stderr=subprocess.STDOUT,
                 )
-                self._processes[name] = proc
-                self._write_pid(name, proc.pid)
+                with self._lock:
+                    self._processes[name] = proc
+                    self._log_handles[name] = log_fh
+                    self._write_pid(name, proc.pid)
                 if self.spawn_grace_seconds > 0:
-                    time.sleep(self.spawn_grace_seconds)
+                    deadline = time.monotonic() + self.spawn_grace_seconds
+                    while time.monotonic() < deadline and proc.poll() is None:
+                        time.sleep(min(0.05, deadline - time.monotonic()))
                 if proc.poll() is not None:
                     # A worker that exits during startup is a failed spawn; reporting
                     # success here would leave the coordinator waiting on a dead agent.
-                    self._processes.pop(name, None)
-                    self._pid_file(name).unlink(missing_ok=True)
+                    with self._lock:
+                        self._processes.pop(name, None)
+                        self._log_handles.pop(name, None)
+                        self._pid_file(name).unlink(missing_ok=True)
                     try:
                         log_fh.flush()
-                        output = log_path.read_text(encoding="utf-8", errors="replace")[-800:]
+                        with open(log_path, "rb") as log_tail:
+                            log_tail.seek(0, os.SEEK_END)
+                            size = log_tail.tell()
+                            log_tail.seek(max(0, size - 800))
+                            output = log_tail.read().decode("utf-8", errors="replace")
                     except OSError:
                         output = ""
                     hint = ""
@@ -328,6 +362,9 @@ class WorkerProcessManager:
                 return {"spawned": False, "error": str(e), "name": name}
             finally:
                 log_fh.close()
+                with self._lock:
+                    if self._log_handles.get(name) is log_fh:
+                        self._log_handles.pop(name, None)
 
     def kill_worker(self, name: str, workspace_mode: str = "inherit"):
         with self._lock:
@@ -342,10 +379,18 @@ class WorkerProcessManager:
             else:
                 pid = self._read_pid(name)
                 if pid is not None and _is_pid_alive(pid[0]):
-                    try:
-                        os.kill(pid[0], signal.SIGTERM)
-                    except OSError:
-                        pass
+                    current_start = _process_start_marker(pid[0])
+                    state = _process_state(pid[0])
+                    valid_identity = (
+                        pid[1] is not None and current_start == pid[1]
+                        if sys.platform.startswith("linux")
+                        else pid[1] is None or not current_start or current_start == pid[1]
+                    )
+                    if valid_identity and state != "Z":
+                        try:
+                            os.kill(pid[0], signal.SIGTERM)
+                        except OSError:
+                            pass
             self._pid_file(name).unlink(missing_ok=True)
             self.workspace_manager.cleanup_workspace(name, mode=workspace_mode)
 
@@ -356,4 +401,4 @@ class WorkerProcessManager:
                 if pf.stem not in names:
                     names.append(pf.stem)
         for name in names:
-            self.kill_worker(name)
+            self.kill_worker(name, workspace_mode=self._workspace_modes.get(name, "inherit"))

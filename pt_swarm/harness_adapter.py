@@ -77,9 +77,13 @@ class PolytokenSwarmAdapter:
         prompt_file = (
             Path(__file__).resolve().parent / "agent_definitions" / filename
         )
-        if prompt_file.exists():
-            return prompt_file.read_text(encoding="utf-8")
-        return ""
+        try:
+            prompt = prompt_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(f"Unable to load role prompt {prompt_file}") from exc
+        if not prompt.strip():
+            raise RuntimeError(f"Role prompt {prompt_file} is empty")
+        return prompt
 
     def on_worker_spawn_requested(
         self,
@@ -119,7 +123,7 @@ class PolytokenSwarmAdapter:
             last_read = m_info.get("last_read_seq", 0)
             wake_prompt = (
                 f"[swarm] new board message #{entry['seq']} (you have read up to #{last_read}). "
-                f"Read anything you have missed, and wait for messages when you have nothing left to do."
+                f"Read anything you have missed, then complete any required follow-up and exit."
             )
             self.worker_runner.spawn_or_wake(
                 name=target_name,

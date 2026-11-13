@@ -21,20 +21,22 @@ class SwarmStallMonitor:
         self.running = False
         self._thread: Optional[threading.Thread] = None
         self.alert_counts = {}
+        self._stop_event = threading.Event()
 
     def start(self):
         self.running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
     def stop(self):
         self.running = False
+        self._stop_event.set()
         if self._thread:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=max(2.0, self.interval + 0.1))
 
     def _run_loop(self):
-        while self.running:
-            time.sleep(self.interval)
+        while self.running and not self._stop_event.wait(self.interval):
             self._safe_check()
 
     def _safe_check(self):
@@ -51,6 +53,8 @@ class SwarmStallMonitor:
             return
 
         last_msg = messages[-1]
+        if last_msg.get("agent") == "monitor":
+            return
         last_text = last_msg.get("text", "")
 
         # 1. If coordinator posted [done], monitor goes quiet
@@ -61,7 +65,8 @@ class SwarmStallMonitor:
         live_workers = {
             name: m
             for name, m in members_data.items()
-            if not m.get("killed", False) and name not in ["monitor", "narrator"]
+            if not m.get("killed", False)
+            and name not in ["coordinator", "monitor", "narrator"]
         }
         if not live_workers:
             return
@@ -70,7 +75,7 @@ class SwarmStallMonitor:
             return  # Normal active computation, not a stall
 
         # 3. Check if all live members are parked
-        parked_modes = {"mentions", "any", "anything"}
+        parked_modes = {"mentions", "anything"}
         all_parked = all(m.get("wake_mode") in parked_modes for m in live_workers.values())
         if not all_parked:
             return

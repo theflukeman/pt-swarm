@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -68,8 +69,10 @@ class TestWorkerProcessManager(unittest.TestCase):
         self.assertTrue(res["spawned"])
         proc = mgr._processes["logger"]
         proc.wait(timeout=3.0)
-        # On Windows, if parent still holds an open handle to logger.log, unlink/rename fails
-        # or we can verify log_fh was closed; removing the log file must succeed after proc exits.
+        log_fh = getattr(mgr, "_log_handles", {}).get("logger")
+        if log_fh is not None:
+            self.assertTrue(log_fh.closed)
+        # This unlink assertion is portable and confirms the child no longer owns it.
         log_path = Path(res["log"])
         log_path.unlink()
         self.assertFalse(log_path.exists())
@@ -107,7 +110,7 @@ class TestWorkerProcessManager(unittest.TestCase):
         # A cleared MCP child environment cannot load a polytoken config that
         # references provider env vars; the failure should name the fix.
         script = (
-            "print('Error: config load failed: env var $NEURALWATT_API_KEY referenced "
+            "print('Error: config load failed: env var $TEST_PROVIDER_KEY referenced "
             "in config.yaml is not set'); raise SystemExit(1)"
         )
         mgr = WorkerProcessManager(
@@ -132,10 +135,12 @@ class TestWorkerProcessManager(unittest.TestCase):
         try:
             res = mgr.spawn_or_wake(name="echoer", prompt_text="hello board", brief_seq=1)
             self.assertTrue(res["spawned"])
-            for _ in range(100):
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
                 if out.exists() and out.read_text(encoding="utf-8"):
                     break
                 time.sleep(0.02)
+            self.assertTrue(out.exists())
             self.assertIn("hello board", out.read_text(encoding="utf-8"))
         finally:
             mgr.kill_worker("echoer")
@@ -149,6 +154,27 @@ class TestWorkerProcessManager(unittest.TestCase):
         )
         mgr.spawn_or_wake(name="alice", prompt_text="do work", brief_seq=0)
         self.assertIn('caller="alice"', specs[0]["initial_input"])
+
+    def test_zombie_pid_is_not_treated_as_running(self):
+        if not sys.platform.startswith("linux"):
+            self.skipTest("zombie state is detected from /proc on Linux only")
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait(timeout=3)
+        mgr = WorkerProcessManager(self.swarm_dir, workspace_root=self.test_dir)
+        mgr._write_pid("zombie", child.pid)
+        self.assertFalse(mgr.is_running("zombie"))
+
+    def test_unverifiable_linux_pid_marker_fails_closed(self):
+        if not sys.platform.startswith("linux"):
+            self.skipTest("start markers are available from /proc on Linux only")
+        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        try:
+            mgr = WorkerProcessManager(self.swarm_dir, workspace_root=self.test_dir)
+            mgr._pid_file("legacy").write_text(str(sleeper.pid), encoding="utf-8")
+            self.assertFalse(mgr.is_running("legacy"))
+        finally:
+            sleeper.kill()
+            sleeper.wait()
 
     def test_recycled_pid_is_not_treated_as_running(self):
         if not sys.platform.startswith("linux"):
@@ -178,6 +204,12 @@ class TestPolytokenSwarmAdapter(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
+    def test_missing_role_prompt_is_rejected(self):
+        adapter = PolytokenSwarmAdapter(workspace_path=str(self.test_dir))
+        with patch("pt_swarm.harness_adapter.Path.read_text", side_effect=OSError("unreadable")):
+            with self.assertRaisesRegex(RuntimeError, "role prompt"):
+                adapter.load_system_prompt("worker")
+
     def test_adapter_shares_workspace_manager_and_wires_mention_wake_and_shutdown(self):
         woken = []
         adapter = PolytokenSwarmAdapter(
@@ -195,6 +227,8 @@ class TestPolytokenSwarmAdapter(unittest.TestCase):
         adapter.board_manager.post_message(agent="coordinator", text="@parser please check")
         self.assertEqual(len(woken), 1)
         self.assertEqual(woken[0]["name"], "parser")
+        self.assertIn("exit", woken[0]["initial_input"])
+        self.assertNotIn("wait for messages when you have nothing", woken[0]["initial_input"])
 
         # Spawn a real subprocess and verify shutdown() terminates it
         cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
@@ -219,6 +253,19 @@ class TestWorkspaceManager(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_git_oserror_falls_back_to_copy(self):
+        wm = WorkspaceManager(self.test_dir)
+        with patch("pt_swarm.workspace_manager.subprocess.run", side_effect=OSError("missing git")):
+            path = wm.provision_workspace("fallback", mode="branch")
+        self.assertTrue((path / "README.md").exists())
+
+    def test_share_worktree_cleanup_preserves_unmerged_changes(self):
+        wm = WorkspaceManager(self.test_dir)
+        ws = wm.provision_workspace("preserve", mode="share")
+        (ws / "unmerged.txt").write_text("keep me", encoding="utf-8")
+        wm.cleanup_workspace("preserve", mode="share")
+        self.assertTrue((ws / "unmerged.txt").exists())
 
     def test_share_worktree_cleanup_removes_branch_and_allows_recreate(self):
         wm = WorkspaceManager(self.test_dir)
@@ -281,6 +328,25 @@ class TestSwarmStallMonitor(unittest.TestCase):
         self.assertEqual(msgs[-1]["agent"], "monitor")
         self.assertIn("@verifier [stall]", msgs[-1]["text"])
 
+
+    def test_unaddressed_post_alert_is_capped_by_original_post(self):
+        self.bm.add_member("w1", role="worker")
+        self.bm.set_member_wake_mode("coordinator", "mentions", wait_since=0)
+        self.bm.set_member_wake_mode("w1", "mentions", wait_since=0)
+        self.bm.post_message("w1", "finished without mention")
+        for _ in range(6):
+            self.monitor.check_for_stall()
+        msgs = self.bm.read_raw_messages()
+        alerts = [m for m in msgs if m.get("agent") == "monitor"]
+        self.assertEqual(len(alerts), 1)
+
+    def test_stop_interrupts_long_monitor_wait(self):
+        self.monitor.interval = 30.0
+        self.monitor.start()
+        started = time.monotonic()
+        self.monitor.stop()
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertFalse(self.monitor._thread.is_alive())
 
     def test_monitor_errors_go_to_stderr_not_stdout(self):
         err, out = io.StringIO(), io.StringIO()

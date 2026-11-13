@@ -24,12 +24,15 @@ class WorkspaceManager:
         self.worktrees_dir.mkdir(parents=True, exist_ok=True)
 
     def _is_git_repo(self) -> bool:
-        res = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=str(self.repo_root),
-            capture_output=True,
-            text=True,
-        )
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=str(self.repo_root),
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return False
         return res.returncode == 0 and res.stdout.strip() == "true"
 
     def provision_workspace(self, agent_name: str, mode: str = "inherit") -> Path:
@@ -46,21 +49,24 @@ class WorkspaceManager:
             if not target_dir.exists():
                 if self._is_git_repo():
                     branch_name = f"swarm/{agent_name}"
-                    has_branch = (
-                        subprocess.run(
+                    try:
+                        has_branch = subprocess.run(
                             ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"],
                             cwd=str(self.repo_root),
                             capture_output=True,
-                        ).returncode
-                        == 0
-                    )
+                        ).returncode == 0
+                    except OSError:
+                        has_branch = False
                     cmd = (
                         ["git", "worktree", "add", str(target_dir), branch_name]
                         if has_branch
                         else ["git", "worktree", "add", "-b", branch_name, str(target_dir)]
                     )
-                    res = subprocess.run(cmd, cwd=str(self.repo_root), capture_output=True, text=True)
-                    if res.returncode != 0:
+                    try:
+                        res = subprocess.run(cmd, cwd=str(self.repo_root), capture_output=True, text=True)
+                    except OSError:
+                        res = None
+                    if res is None or res.returncode != 0:
                         shutil.copytree(self.repo_root, target_dir, ignore=copy_ignore)
                 else:
                     shutil.copytree(self.repo_root, target_dir, ignore=copy_ignore)
@@ -70,8 +76,11 @@ class WorkspaceManager:
             if not target_dir.exists():
                 if self._is_git_repo():
                     cmd = ["git", "clone", str(self.repo_root), str(target_dir)]
-                    res = subprocess.run(cmd, cwd=str(self.repo_root), capture_output=True, text=True)
-                    if res.returncode != 0:
+                    try:
+                        res = subprocess.run(cmd, cwd=str(self.repo_root), capture_output=True, text=True)
+                    except OSError:
+                        res = None
+                    if res is None or res.returncode != 0:
                         shutil.copytree(self.repo_root, target_dir, ignore=copy_ignore)
                 else:
                     shutil.copytree(self.repo_root, target_dir, ignore=copy_ignore)
@@ -87,22 +96,48 @@ class WorkspaceManager:
             return
 
         target_dir = self.worktrees_dir / agent_name
-        if mode == "share" and self._is_git_repo():
-            if target_dir.exists():
-                subprocess.run(
-                    ["git", "worktree", "remove", "--force", str(target_dir)],
-                    cwd=str(self.repo_root),
-                    capture_output=True,
+        is_worktree = False
+        if mode == "share" and target_dir.exists():
+            try:
+                git_dir = subprocess.run(
+                    ["git", "rev-parse", "--is-inside-work-tree"],
+                    cwd=str(target_dir), capture_output=True, text=True,
                 )
-            subprocess.run(
-                ["git", "worktree", "prune"],
-                cwd=str(self.repo_root),
-                capture_output=True,
-            )
-            subprocess.run(
-                ["git", "branch", "-D", f"swarm/{agent_name}"],
-                cwd=str(self.repo_root),
-                capture_output=True,
-            )
-        if target_dir.exists():
+                is_worktree = (
+                    git_dir.returncode == 0
+                    and git_dir.stdout.strip() == "true"
+                    and (target_dir / ".git").exists()
+                )
+                if is_worktree:
+                    status = subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        cwd=str(target_dir), capture_output=True, text=True,
+                    )
+                    if status.returncode != 0 or status.stdout.strip():
+                        return
+                    subprocess.run(
+                        ["git", "worktree", "remove", str(target_dir)],
+                        cwd=str(self.repo_root), capture_output=True,
+                    )
+                    subprocess.run(["git", "worktree", "prune"], cwd=str(self.repo_root), capture_output=True)
+                    subprocess.run(["git", "branch", "-D", f"swarm/{agent_name}"], cwd=str(self.repo_root), capture_output=True)
+            except OSError:
+                return
+        if target_dir.exists() and mode == "share" and not (target_dir / ".git").exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+        if target_dir.exists() and mode == "branch":
+            try:
+                status = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=str(target_dir),
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError:
+                return
+            if status.returncode != 0 or status.stdout.strip():
+                return
+            shutil.rmtree(target_dir, ignore_errors=True)
+        elif target_dir.exists() and mode != "share":
+            # Non-Git fallback copies contain no commits to preserve.
             shutil.rmtree(target_dir, ignore_errors=True)
