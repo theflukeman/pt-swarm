@@ -5,6 +5,7 @@ Matches the exact return shapes and full feature set of Antigravity native swarm
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from typing import Any, Callable, Dict, List, Optional
@@ -80,6 +81,10 @@ class SwarmToolHandlers:
         return MAIN_CHANNEL
 
     def handle_swarm(self, **kwargs) -> Dict[str, Any]:
+        allowed = {"action", "name", "brief", "mode", "job_id", "state", "model", "workspace", "fork", "n", "tasks", "title", "channels", "channel", "op", "topic", "all", "caller"}
+        unknown = set(kwargs) - allowed
+        if unknown:
+            return {"error": f"Unknown argument(s): {', '.join(sorted(unknown))}"}
         action = kwargs.get("action")
         caller = self._effective_caller(kwargs)
         # Reconcile `session` requests with the model the session is running before
@@ -109,7 +114,9 @@ class SwarmToolHandlers:
             return res
 
         elif action == "title":
-            title = kwargs.get("title", "")
+            if "title" not in kwargs:
+                return {"error": "Missing 'title' parameter"}
+            title = kwargs["title"]
             self.bm.set_title(title)
             return {"status": "titled", "title": title}
 
@@ -203,14 +210,22 @@ class SwarmToolHandlers:
             tasks: Optional[List[str]] = kwargs.get("tasks")
             raw_n = kwargs.get("n")
             if raw_n is not None:
-                n_copies = int(raw_n)
-                if n_copies < 1:
-                    return {"error": f"Invalid 'n' parameter: {n_copies} (must be >= 1)"}
+                if isinstance(raw_n, bool) or not isinstance(raw_n, int):
+                    return {"error": "Invalid 'n' parameter (must be an integer)"}
+                n_copies = raw_n
+                if n_copies < 1 or n_copies > 100:
+                    return {"error": "Invalid 'n' parameter (must be between 1 and 100)"}
             else:
                 n_copies = 1
 
+            if isinstance(tasks, list) and len(tasks) > 100:
+                return {"error": "Invalid 'tasks' parameter (maximum 100 tasks)"}
+            if isinstance(tasks, list) and tasks and raw_n is not None and len(tasks) != n_copies:
+                return {"error": "'n' must match the number of 'tasks'"}
             if not base_name:
                 return {"error": "Missing 'name' parameter"}
+            if not isinstance(base_name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", base_name):
+                return {"error": "Invalid 'name' parameter (use 1-64 lowercase letters, digits, '_' or '-', starting with a letter)"}
 
             post_channel = (
                 channels[0]
@@ -241,7 +256,7 @@ class SwarmToolHandlers:
                             phase="RUNNING" if has_spawner else "delegated",
                         )
                     except ValueError as e:
-                        return {"error": str(e)}
+                        return {"error": str(e), "members": added_members, "brief_seqs": brief_seqs}
                     post = self.bm.post_message(
                         agent=caller,
                         text=f"@{shard_name} {shard_brief}",
@@ -358,7 +373,9 @@ class SwarmToolHandlers:
 
         elif action == "model":
             name = kwargs.get("name") or caller
-            new_model = kwargs.get("model") or "default"
+            if "model" not in kwargs:
+                return {"error": "Missing 'model' parameter"}
+            new_model = kwargs["model"]
             if not self.bm.set_model(name, new_model):
                 return {"error": f"Member '{name}' not found"}
             member = self.bm.read_members().get("members", {}).get(name, {})
@@ -389,8 +406,12 @@ class SwarmToolHandlers:
     def handle_post_message(
         self, text: str, channel: Optional[str] = None, caller: Optional[str] = None, **_extra
     ) -> Dict[str, Any]:
+        if _extra:
+            return {"error": f"Unknown argument(s): {', '.join(sorted(_extra))}"}
         if not text:
             return {"error": "Missing text"}
+        if channel is not None and not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", channel):
+            return {"error": "Invalid channel name"}
         effective_caller = caller or self.caller
         target_channel = channel or self._default_channel_for(effective_caller)
         msg = self.bm.post_message(
@@ -408,6 +429,12 @@ class SwarmToolHandlers:
         caller: Optional[str] = None,
         **_extra,
     ) -> Dict[str, Any]:
+        if _extra:
+            return {"error": f"Unknown argument(s): {', '.join(sorted(_extra))}"}
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            return {"error": "Invalid 'limit' parameter (must be a positive integer)"}
+        if isinstance(since, bool) or not isinstance(since, int) or since < 0:
+            return {"error": "Invalid 'since' parameter (must be a non-negative integer)"}
         effective_caller = caller or self.caller
         if status:
             self.bm.sync_session_models()
@@ -430,6 +457,12 @@ class SwarmToolHandlers:
         caller: Optional[str] = None,
         **_extra,
     ) -> str:
+        if _extra:
+            return f"Error: unknown argument(s): {', '.join(sorted(_extra))}"
+        if isinstance(since, bool) or not isinstance(since, int) or since < 0:
+            return "Error: 'since' must be a non-negative integer"
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or timeout_seconds < 0:
+            return "Error: 'timeout_seconds' must be a non-negative integer"
         effective_caller = caller or self.caller
         outcome = self.bm.wait_for_event(
             reader_name=effective_caller,

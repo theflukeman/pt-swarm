@@ -1,7 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "swarm",
-  "description": "Manage the swarm of agents working on the shared message board.",
   "type": "object",
   "properties": {
     "action": {
@@ -85,5 +83,6 @@
       "description": "Optional caller roster name override when sharing a single MCP server."
     }
   },
-  "required": ["action"]
+  "required": ["action"],
+  "additionalProperties": false
 }

@@ -1,7 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "post_message",
-  "description": "Post a message to the shared swarm board.",
   "type": "object",
   "properties": {
     "text": {
@@ -10,12 +8,13 @@
     },
     "channel": {
       "type": "string",
-      "description": "Optional channel to post to. Defaults to 'main' or the sender's primary channel."
+      "description": "Optional channel to post to. Defaults to main or the sender's primary channel."
     },
     "caller": {
       "type": "string",
       "description": "Optional caller roster name override."
     }
   },
-  "required": ["text"]
+  "required": ["text"],
+  "additionalProperties": false
 }

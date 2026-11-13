@@ -17,10 +17,7 @@ from .worker_runner import WorkerProcessManager
 TOOLS = [
     {
         "name": "swarm",
-        "description": (
-            "Manage the swarm of agents working on the shared message board. "
-            "Actions: status, models, add, bind, model, kill, title, channel."
-        ),
+        "description": "Manage the swarm of agents working on the shared message board.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -35,7 +32,7 @@ TOOLS = [
                 },
                 "brief": {
                     "type": "string",
-                    "description": "The worker's assignment for add: what it owns and what done looks like.",
+                    "description": "The worker's assignment for add: what it owns and what done looks like. Posted publicly on the board as @<name> <brief>.",
                 },
                 "mode": {
                     "type": "string",
@@ -59,20 +56,20 @@ TOOLS = [
                     "type": "string",
                     "enum": ["inherit", "share", "branch"],
                     "default": "inherit",
-                    "description": "Workspace isolation mode: inherit, share (git worktree), or branch (clone).",
+                    "description": "Workspace isolation mode: inherit shares parent directory, share gives an isolated worktree, branch creates an isolated clone.",
                 },
                 "fork": {
                     "type": "string",
-                    "description": "Optional roster name of an existing member to fork history from.",
+                    "description": "Optional roster name of an existing member (or 'coordinator') whose conversation history this worker forks from.",
                 },
                 "n": {
                     "type": "integer",
-                    "description": "Optional number of homogeneous copies to spawn (<name>-1..<name>-<n>).",
+                    "description": "Number of homogeneous copies to spawn (<name>-1 through <name>-<n>).",
                 },
                 "tasks": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional per-worker slice targets for sharded groups (<name>-1..<name>-<k>).",
+                    "description": "Per-worker slice targets for sharded groups (<name>-1 through <name>-<len>).",
                 },
                 "title": {
                     "type": "string",
@@ -85,7 +82,7 @@ TOOLS = [
                 },
                 "channel": {
                     "type": "string",
-                    "description": "Target channel name for channel action.",
+                    "description": "Target channel for channel operation.",
                 },
                 "op": {
                     "type": "string",
@@ -106,6 +103,7 @@ TOOLS = [
                 },
             },
             "required": ["action"],
+            "additionalProperties": False,
         },
     },
     {
@@ -116,7 +114,7 @@ TOOLS = [
             "properties": {
                 "text": {
                     "type": "string",
-                    "description": "Message text. Use @<name> to address specific members, @all, or @#channel.",
+                    "description": "The message body. Use @<name> to address specific members, @all to broadcast, or @#channel to address a channel.",
                 },
                 "channel": {
                     "type": "string",
@@ -128,6 +126,7 @@ TOOLS = [
                 },
             },
             "required": ["text"],
+            "additionalProperties": False,
         },
     },
     {
@@ -139,12 +138,13 @@ TOOLS = [
                 "since": {
                     "type": "integer",
                     "default": 0,
-                    "description": "Return messages posted after this sequence number.",
+                    "description": "Return messages posted after this sequence number. Set to 0 to read from beginning.",
                 },
                 "limit": {
                     "type": "integer",
                     "default": 100,
-                    "description": "Maximum number of messages to return.",
+                    "description": "Maximum number of messages to return in this read.",
+                    "minimum": 1,
                 },
                 "seqs": {
                     "type": "array",
@@ -153,18 +153,19 @@ TOOLS = [
                 },
                 "channel": {
                     "type": "string",
-                    "description": "Channel to read ('*' for all channels).",
+                    "description": "Optional channel filter. Reads only channels visible to the caller; '*' is treated as no explicit channel filter.",
                 },
                 "status": {
                     "type": "boolean",
                     "default": False,
-                    "description": "When true, returns the roster status instead of messages.",
+                    "description": "When true, returns the status of all members (wake_mode, wait_since, last_read_seq, state) instead of messages.",
                 },
                 "caller": {
                     "type": "string",
                     "description": "Optional caller roster name override.",
                 },
             },
+            "additionalProperties": False,
         },
     },
     {
@@ -178,17 +179,17 @@ TOOLS = [
             "properties": {
                 "since": {
                     "type": "integer",
-                    "description": "Highest message sequence number the caller has seen.",
+                    "description": "Highest message sequence number the caller has actually seen/processed.",
                 },
                 "mentions_only": {
                     "type": "boolean",
                     "default": True,
-                    "description": "Wake only for messages mentioning this agent, @all, or @#channel.",
+                    "description": "If true, wake only when mentioned directly (@<name>), via @all, or via member's channel. If false, wake on any post.",
                 },
                 "timeout_seconds": {
                     "type": "integer",
                     "default": 300,
-                    "description": "Maximum seconds to wait before returning.",
+                    "description": "Maximum seconds to wait before waking automatically.",
                 },
                 "caller": {
                     "type": "string",
@@ -196,13 +197,17 @@ TOOLS = [
                 },
             },
             "required": ["since"],
+            "additionalProperties": False,
         },
     },
 ]
 
 
+_NO_ID = object()
+
+
 def send_response(req_id: Any, result: Any = None, error: Any = None):
-    if req_id is None:
+    if req_id is _NO_ID:
         return
     resp: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id}
     if error is not None:
@@ -233,7 +238,7 @@ def create_runtime() -> SwarmToolHandlers:
             last_read = m_info.get("last_read_seq", 0)
             wake_prompt = (
                 f"[swarm] new board message #{entry['seq']} (you have read up to #{last_read}). "
-                f"Read anything you have missed, and wait for messages when you have nothing left to do."
+                f"Read anything you have missed, complete any required follow-up, then exit."
             )
             worker_runner.spawn_or_wake(
                 name=target_name,
@@ -259,10 +264,17 @@ def negotiate_protocol_version(requested: Any) -> str:
     return SUPPORTED_PROTOCOL_VERSIONS[0]
 
 
-def handle_rpc_request(handlers: SwarmToolHandlers, req: Dict[str, Any]) -> None:
+def handle_rpc_request(handlers: SwarmToolHandlers, req: Any) -> None:
+    if not isinstance(req, dict) or req.get("jsonrpc") != "2.0" or not isinstance(req.get("method"), str):
+        req_id = req.get("id", _NO_ID) if isinstance(req, dict) else _NO_ID
+        send_response(req_id if req_id is not _NO_ID else None, error={"code": -32600, "message": "Invalid Request"})
+        return
     method = req.get("method")
-    req_id = req.get("id")
+    req_id = req.get("id", _NO_ID)
     params = req.get("params") or {}
+    if not isinstance(params, dict):
+        send_response(req_id, error={"code": -32602, "message": "Invalid params"})
+        return
 
     if method == "initialize":
         send_response(
@@ -281,9 +293,14 @@ def handle_rpc_request(handlers: SwarmToolHandlers, req: Dict[str, Any]) -> None
         send_response(req_id, {"tools": TOOLS})
     elif method == "tools/call":
         tool_name = params.get("name")
-        args = params.get("arguments") or {}
+        args = params.get("arguments", {})
         if not isinstance(args, dict):
-            args = {}
+            send_response(req_id, error={"code": -32602, "message": "Invalid params"})
+            return
+        known = {"swarm": set(TOOLS[0]["inputSchema"]["properties"]), "post_message": {"text", "channel", "caller"}, "read_board": {"since", "limit", "seqs", "channel", "status", "caller"}, "swarm_wait": {"since", "mentions_only", "timeout_seconds", "caller"}}
+        if tool_name in known and set(args) - known[tool_name]:
+            send_response(req_id, error={"code": -32602, "message": "Invalid params"})
+            return
 
         try:
             if tool_name == "swarm":
@@ -309,10 +326,12 @@ def handle_rpc_request(handlers: SwarmToolHandlers, req: Dict[str, Any]) -> None
                 req_id,
                 {"content": [{"type": "text", "text": content_text}], "isError": is_err},
             )
-        except Exception as e:
+        except (TypeError, ValueError, KeyError) as e:
+            send_response(req_id, error={"code": -32602, "message": "Invalid params"})
+        except Exception:
             send_response(
                 req_id,
-                {"content": [{"type": "text", "text": f"Error: {str(e)}"}], "isError": True},
+                {"content": [{"type": "text", "text": "Tool execution failed"}], "isError": True},
             )
     else:
         send_response(
@@ -330,6 +349,7 @@ def main():
         try:
             req = json.loads(line)
         except Exception:
+            send_response(None, error={"code": -32700, "message": "Parse error"})
             continue
         handle_rpc_request(handlers, req)
 

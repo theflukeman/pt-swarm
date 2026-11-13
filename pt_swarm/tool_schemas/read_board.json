@@ -1,7 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "read_board",
-  "description": "Read posts from the shared swarm board or retrieve member states.",
   "type": "object",
   "properties": {
     "since": {
@@ -12,7 +10,8 @@
     "limit": {
       "type": "integer",
       "default": 100,
-      "description": "Maximum number of messages to return in this read."
+      "description": "Maximum number of messages to return in this read.",
+      "minimum": 1
     },
     "seqs": {
       "type": "array",
@@ -21,7 +20,7 @@
     },
     "channel": {
       "type": "string",
-      "description": "Channel to read from. '*' reads all channels. If omitted, reads channels visible to the caller."
+      "description": "Optional channel filter. Reads only channels visible to the caller; '*' is treated as no explicit channel filter."
     },
     "status": {
       "type": "boolean",
@@ -32,5 +31,6 @@
       "type": "string",
       "description": "Optional caller roster name override."
     }
-  }
+  },
+  "additionalProperties": false
 }
