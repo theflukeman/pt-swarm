@@ -41,6 +41,7 @@
     // board opens on the latest posts; the user scrolling away clears it and
     // scrolling back to the bottom sets it again.
     stick: true,
+    feedKey: null,
   };
   // The page itself decides where the feed starts (at the newest post).
   if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
@@ -308,6 +309,7 @@
   function resetSwarm(id) {
     state.swarm = id;
     state.etag = '';
+    state.feedKey = null;
     state.snap = null;
     state.seenSeqs.clear();
     state.hiddenAgents.clear();
@@ -374,8 +376,8 @@
       else q.set('etag', state.etag);
       if (conv) q.set('conversationId', conv);
       const r = await getJson(`/api/swarm?${q}`);
-      state.lastOk = Date.now();
       if (!r.swarm) {
+        state.lastOk = Date.now();
         if (state.swarm) resetSwarm(null);
         state.me = null;
         showEmpty(r.conversationId || conv);
@@ -384,9 +386,12 @@
       }
       if (r.swarm !== state.swarm) resetSwarm(r.swarm);
       state.me = r.member || null;
-      if (!r.unchanged) {
+      if (r.unchanged) {
+        state.lastOk = Date.now();
+      } else {
         ingest(r);
         state.etag = r.etag;
+        state.lastOk = Date.now();
       }
       showView('board');
     } catch (e) {
@@ -472,7 +477,12 @@
     const visibleTeam = team.filter((m) => !m.killed);
     $('swarm-title').textContent = s.title || 'Untitled swarm';
     $('swarm-title').title = `${s.title || 'Untitled swarm'}\nswarm ${s.id}\n${s.dir || ''}`;
-    if ($('swarm-meta').innerHTML !== '') $('swarm-meta').innerHTML = '';
+    const meta = $('swarm-meta');
+    const current = s.members.find((m) => m.name === state.me);
+    const status = current ? `${current.name} · ${statusLabel(current.status)}` : `${visibleTeam.length} ${plural(visibleTeam.length, 'member')}`;
+    const summary = `${s.head || 0} ${plural(s.head || 0, 'post')} · ${status}`;
+    if (meta.textContent !== summary) meta.textContent = summary;
+    meta.classList.remove('hidden');
     $('tab-count-feed').textContent = s.head ? String(s.head) : '';
     $('tab-count-members').textContent = visibleTeam.length ? String(visibleTeam.length) : '';
   }
@@ -691,6 +701,11 @@
     const feed = $('feed');
     const wasNearBottom = nearBottom();
     const myCursor = state.me ? memberOf(state.me)?.last_read_seq ?? null : null;
+    const feedKey = JSON.stringify([state.snap.head, state.channel, $('f-search').value, $('f-agent').value,
+      $('f-mention').value, $('f-channel').value, [...state.hiddenAgents].sort(), [...state.expanded].sort(),
+      myCursor, [...newSet].sort((a, b) => a - b)]);
+    if (feedKey === state.feedKey) return;
+    state.feedKey = feedKey;
     const msgs = visibleMessages();
     let dividerDone = false;
     const html = msgs.map((m) => {
@@ -1847,7 +1862,9 @@
       if (on && focus) x.focus();
     });
     document.querySelectorAll('.tab-body').forEach((x) => x.classList.toggle('active', x.id === `tab-${tab}`));
+    const previousTab = state.tab;
     state.tab = tab;
+    if (previousTab === 'graph' && tab !== 'graph' && replay.playing) replayStop();
     if (state.snap && tab === 'graph') renderGraph();
     if (state.snap && tab === 'overview') renderOverview();
     if (state.snap && tab === 'members') renderMembers();

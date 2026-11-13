@@ -388,12 +388,13 @@
         statTag = `<span class="o2-mstat">${esc(x.title)}</span>`;
       }
 
-      const showRoleSub = !isCoord && !x.killed && (st==='needs_you' || st==='working' || st==='waiting_on') && x.title;
       let bodyLine = isCoord ? (x.now || memberLine('coordinator', x)) : (x.now || '');
       if(!isCoord && st==='needs_you' && x.ask){
         const ac = itemCopy(x.ask.id, x.ask.title, x.ask.why);
         bodyLine = ac.line ? `${ac.title} — ${ac.line}` : ac.title;
       }
+      const showRoleSub = !isCoord && !x.killed && (st==='needs_you' || st==='working' || st==='waiting_on') && x.title &&
+        !(bodyLine === x.title || bodyLine === `${n}: ${x.title}` || bodyLine === `${n} — ${x.title}`);
 
       const actBtn = (!isCoord && st==='needs_you' && x.ask)
         ? `<button type="button" class="o2-btn xs vis" data-draft="@${esc(n)} re #${x.ask.seq}: ">${ui('reply')}</button>`
